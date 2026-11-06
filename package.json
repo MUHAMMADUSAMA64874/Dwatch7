@@ -1,0 +1,15 @@
+{
+  "name": "wristlab-arcade",
+  "version": "1.0.0",
+  "description": "D Watch 7 reverse-engineered studio with 20 playable games",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "@types/node": "^22.15.21"
+  }
+}

@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Reflex Duel · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const W = 960, H = 600;
+  const MONO = "'IBM Plex Mono',monospace";
+  const TAU = Math.PI * 2;
+  const GOLD = '#fde047';
+  const RIVAL = '#f43f5e';
+  const GREEN = '#4ade80';
+  const RING_X = 480, RING_Y = 288, RING_R = 120;
+
+  function installHelpers(g) {
+    if (typeof g.clamp !== 'function') g.clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+    if (typeof g.lerp !== 'function') g.lerp = (a, b, t) => a + (b - a) * t;
+    if (typeof g.rand !== 'function') g.rand = (a = 0, b = 1) => a + Math.random() * (b - a);
+    if (typeof g.randInt !== 'function') g.randInt = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+    if (typeof g.pick !== 'function') g.pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    if (typeof g.dist !== 'function') g.dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+    if (typeof g.angle !== 'function') g.angle = (x1, y1, x2, y2) => Math.atan2(y2 - y1, x2 - x1);
+  }
+
+  function startRound(g) {
+    g.phase = 'intro';
+    g.introT = 0.85;
+    g.waitT = 0;
+    g.signalDelay = g.rand(0.8, 3.0);
+    g.playerPressed = false;
+    g.playerRT = null;
+    g.rivalRT = g.clamp(g.rand(210, 330) + g.rand(-12, 12), 195, 345);
+    g.roundWinner = null;
+    g.roundNote = '';
+    g.falseStart = false;
+    g.resultT = 0;
+    g.heartT = 0.35;
+    g.heartCount = 0;
+    g.signalT = 0;
+  }
+
+  function triggerSignal(g) {
+    g.phase = 'signal';
+    g.signalT = g.time;
+    g.flash = 1;
+    g.flashColor = GREEN;
+    g.burst(RING_X, RING_Y, GREEN, 26, { speed: 340, life: 0.7, size: 3 });
+    g.burst(RING_X, RING_Y, '#ffffff', 12, { speed: 220, life: 0.5, size: 2 });
+    g.shake(8, 0.3);
+    g.audio.sfx('laser');
+    g.audio.tone(1046, 0.1, 'square', 0.14);
+    g.audio.tone(1568, 0.18, 'triangle', 0.1, { delay: 0.045 });
+    g.haptic('hit');
+  }
+
+  function resolveRound(g, winner, rt, note) {
+    if (g.phase === 'result' || g.done) return;
+    g.phase = 'result';
+    g.resultT = 1.9;
+    g.roundWinner = winner;
+    g.roundNote = note || '';
+
+    if (winner === 'player') {
+      g.winsP++;
+      const bonus = Math.round(100 + Math.max(0, 330 - (rt || 330)));
+      g.addScore(bonus);
+      g.audio.sfx('coin');
+      g.audio.tone(880, 0.1, 'square', 0.13);
+      g.audio.tone(1320, 0.22, 'triangle', 0.10, { delay: 0.06 });
+      g.haptic('coin');
+      g.burst(190, 300, GOLD, 24, { speed: 260, life: 0.8, size: 3 });
+    } else {
+      g.winsA++;
+      g.audio.sfx('hit');
+      g.audio.tone(180, 0.24, 'sawtooth', 0.12, { slide: 90 });
+      g.haptic('hit');
+      g.shake(7, 0.3);
+      g.flash = 1;
+      g.flashColor = note === 'FALSE START' ? '#ef4444' : RIVAL;
+      g.burst(770, 300, RIVAL, 22, { speed: 260, life: 0.8, size: 3 });
+    }
+  }
+
+  function finish(g) {
+    if (g.done) return;
+    g.done = true;
+    const won = g.winsP >= 5;
+    g.finalWin = won;
+    g.endT = 1.5;
+    const avg = g.rtCount > 0 ? Math.round(g.rtSum / g.rtCount) : 0;
+    g.endDetail = (won ? 'Duel won ' : 'Duel lost ') + g.winsP + '–' + g.winsA +
+      (avg > 0 ? ' · avg ' + avg + ' ms' : ' · no clean strikes');
+    g.audio.stopMusic();
+    if (won) {
+      g.audio.sfx('win');
+      g.haptic('coin');
+    } else {
+      g.audio.sfx('lose');
+    }
+  }
+
+  WristGame.mount({
+    id: 'reflex-duel',
+    title: 'Reflex Duel',
+    tagline: 'Wait for green. Then commit.',
+    category: 'Arcade',
+    accent: '#fde047',
+    bg: '#0c0a03',
+    controls: [
+      { keys: 'SPACE', label: 'STRIKE' },
+      { keys: 'CLICK', label: 'STRIKE' },
+      { keys: 'WATCH', label: 'ACTION' }
+    ],
+    tips: [
+      'The ring turns green after a random wait. Hit it before your rival does.',
+      'Pressing during the amber WAIT is a false start — the round goes to the rival.',
+      'Best of nine. Your reaction time is shown after every exchange.'
+    ],
+
+    init(g) {
+      installHelpers(g);
+      g.score = 0;
+      g.winsP = 0;
+      g.winsA = 0;
+      g.round = 1;
+      g.phase = 'intro';
+      g.introT = 0.85;
+      g.waitT = 0;
+      g.signalDelay = 1.5;
+      g.signalT = 0;
+      g.playerPressed = false;
+      g.playerRT = null;
+      g.rivalRT = 260;
+      g.roundWinner = null;
+      g.roundNote = '';
+      g.falseStart = false;
+      g.resultT = 0;
+      g.heartT = 0.4;
+      g.heartCount = 0;
+      g.flash = 0;
+      g.flashColor = GREEN;
+      g.rtSum = 0;
+      g.rtCount = 0;
+      g.done = false;
+      g.finalWin = false;
+      g.endT = 0;
+      g.endDetail = '';
+      g.tension = [];
+      for (let i = 0; i < 52; i++) {
+        g.tension.push({
+          a: g.rand(0, TAU),
+          r: g.rand(150, 430),
+          spd: g.rand(0.06, 0.30) * (Math.random() < 0.5 ? -1 : 1),
+          size: g.rand(1, 2.6),
+          warm: Math.random() < 0.6
+        });
+      }
+      startRound(g);
+      g.audio.stopMusic();
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 110, bpm: 94, scale: [0, 2, 3, 7, 10], wave: 'sawtooth', gain: 0.026 });
+    },
+
+    onAction(g, action, down) {
+      if (!down || action !== 'action' || g.done) return;
+      if (g.phase === 'wait') {
+        g.falseStart = true;
+        g.playerPressed = true;
+        g.playerRT = null;
+        g.audio.sfx('buzzer');
+        g.haptic('crash');
+        resolveRound(g, 'rival', null, 'FALSE START');
+      } else if (g.phase === 'signal' && !g.playerPressed) {
+        g.playerPressed = true;
+        const ms = Math.max(1, (g.time - g.signalT) * 1000);
+        g.playerRT = ms;
+        g.rtSum += ms;
+        g.rtCount++;
+        if (ms <= g.rivalRT) resolveRound(g, 'player', ms, 'YOU STRIKE FIRST');
+        else resolveRound(g, 'rival', ms, 'RIVAL FASTER');
+      }
+    },
+
+    onPointer(g, x, y, type) {
+      if (type !== 'down' || g.done) return;
+      this.onAction(g, 'action', true);
+    },
+
+    update(g, dt) {
+      if (g.done) {
+        g.endT -= dt;
+        if (g.endT <= 0) g.over(g.endDetail);
+        return;
+      }
+
+      if (g.flash > 0) g.flash = Math.max(0, g.flash - dt * 2.6);
+
+      for (let i = 0; i < g.tension.length; i++) {
+        const p = g.tension[i];
+        p.a += p.spd * dt;
+      }
+
+      if (g.phase === 'intro') {
+        g.introT -= dt;
+        if (g.introT <= 0) {
+          g.phase = 'wait';
+          g.waitT = 0;
+          g.heartT = 0.3;
+          g.audio.sfx('blip');
+        }
+      } else if (g.phase === 'wait') {
+        g.waitT += dt;
+        g.heartT -= dt;
+        if (g.heartT <= 0) {
+          g.heartT = Math.max(0.34, 0.6 - g.waitT * 0.09);
+          g.heartCount++;
+          g.audio.tone(58 + (g.heartCount % 2) * 9, 0.16, 'sine', 0.15, { slide: 48 });
+          g.audio.tone(90, 0.08, 'triangle', 0.035, { delay: 0.08 });
+          g.haptic('heartbeat');
+        }
+        if (g.waitT >= g.signalDelay) triggerSignal(g);
+      } else if (g.phase === 'signal') {
+        const ms = (g.time - g.signalT) * 1000;
+        if (!g.playerPressed && ms >= g.rivalRT) {
+          resolveRound(g, 'rival', null, 'TOO SLOW');
+        }
+      } else if (g.phase === 'result') {
+        g.resultT -= dt;
+        if (g.resultT <= 0) {
+          if (g.winsP >= 5 || g.winsA >= 5) finish(g);
+          else { g.round++; startRound(g); }
+        }
+      }
+    },
+
+    draw(g, ctx) {
+      const t = g.time;
+      g.clear('#0c0a03');
+
+      const bg = ctx.createRadialGradient(480, 300, 40, 480, 320, 760);
+      bg.addColorStop(0, 'rgba(90,70,10,.32)');
+      bg.addColorStop(0.45, 'rgba(40,28,6,.18)');
+      bg.addColorStop(1, 'rgba(12,10,3,0)');
+      ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+
+      // Arena rings
+      ctx.save();
+      for (let r = 160; r <= 470; r += 52) {
+        ctx.globalAlpha = 0.035 + (r % 104 === 0 ? 0.02 : 0);
+        ctx.strokeStyle = GOLD;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(RING_X, RING_Y, r + Math.sin(t * 0.7 + r) * 3, 0, TAU);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // Arena spokes
+      ctx.save();
+      ctx.globalAlpha = 0.05;
+      ctx.strokeStyle = GOLD;
+      ctx.lineWidth = 1;
+      for (let i = 0; i < 16; i++) {
+        const a = i / 16 * TAU + t * 0.015;
+        ctx.beginPath();
+        ctx.moveTo(RING_X + Math.cos(a) * 150, RING_Y + Math.sin(a) * 150);
+        ctx.lineTo(RING_X + Math.cos(a) * 520, RING_Y + Math.sin(a) * 360);
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // Tension particles
+      const boost = g.phase === 'signal' ? Math.min(1, (t - g.signalT) * 3) : 0;
+      for (let i = 0; i < g.tension.length; i++) {
+        const p = g.tension[i];
+        const rr = p.r + boost * 90;
+        const px = RING_X + Math.cos(p.a) * rr;
+        const py = RING_Y + Math.sin(p.a) * rr * 0.62;
+        const alpha = (g.phase === 'wait' ? 0.30 : g.phase === 'signal' ? 0.55 : 0.15) * (0.5 + (p.size / 2.6) * 0.5);
+        ctx.globalAlpha = alpha;
+        g.circle(px, py, p.size, p.warm ? GOLD : RIVAL);
+      }
+      ctx.globalAlpha = 1;
+
+      // Center ring
+      let ringColor = '#a16207';
+      let ringGlow = 10;
+      let ringW = 4;
+      if (g.phase === 'wait') {
+        const beat = 0.5 + 0.5 * Math.sin(g.waitT * Math.PI * 2.4);
+        ringColor = 'rgba(253,224,71,' + (0.35 + beat * 0.45) + ')';
+        ringGlow = 12 + beat * 24;
+        ringW = 4 + beat * 2.5;
+      } else if (g.phase === 'signal') {
+        ringColor = GREEN;
+        ringGlow = 44;
+        ringW = 7;
+      } else if (g.phase === 'result') {
+        ringColor = g.roundWinner === 'player' ? GOLD : RIVAL;
+        ringGlow = 24;
+        ringW = 5;
+      } else if (g.phase === 'intro') {
+        ringColor = 'rgba(253,224,71,.45)';
+        ringGlow = 14;
+      }
+
+      if (g.phase === 'signal') {
+        const sg = ctx.createRadialGradient(RING_X, RING_Y, 10, RING_X, RING_Y, RING_R + 40);
+        sg.addColorStop(0, 'rgba(74,222,128,.22)');
+        sg.addColorStop(0.7, 'rgba(74,222,128,.08)');
+        sg.addColorStop(1, 'rgba(74,222,128,0)');
+        ctx.fillStyle = sg;
+        ctx.beginPath(); ctx.arc(RING_X, RING_Y, RING_R + 40, 0, TAU); ctx.fill();
+
+        const age = t - g.signalT;
+        for (let i = 0; i < 3; i++) {
+          const k = (age * 0.9 + i * 0.33) % 1;
+          ctx.save();
+          ctx.globalAlpha = (1 - k) * 0.45;
+          g.circle(RING_X, RING_Y, RING_R + k * 180, null, GREEN, 2.5);
+          ctx.restore();
+        }
+      }
+
+      ctx.save();
+      ctx.shadowColor = ringColor;
+      ctx.shadowBlur = ringGlow;
+      g.circle(RING_X, RING_Y, RING_R, 'rgba(8,7,2,.72)', ringColor, ringW);
+      ctx.restore();
+      g.circle(RING_X, RING_Y, RING_R - 16, null, 'rgba(255,255,255,.04)', 1);
+      g.circle(RING_X, RING_Y, RING_R - 44, null, 'rgba(255,255,255,.025)', 1);
+
+      // Center state text
+      if (g.phase === 'intro') {
+        g.text('ROUND ' + g.round, RING_X, RING_Y - 4, {
+          size: 38, align: 'center', color: '#fff7d6', font: MONO, glow: GOLD, blur: 24
+        });
+        g.text('GET READY', RING_X, RING_Y + 30, {
+          size: 10, align: 'center', color: 'rgba(253,224,71,.7)', font: MONO
+        });
+      } else if (g.phase === 'wait') {
+        const beat = 0.5 + 0.5 * Math.sin(g.waitT * Math.PI * 2.4);
+        ctx.save();
+        ctx.globalAlpha = 0.65 + beat * 0.35;
+        g.text('WAIT', RING_X, RING_Y + 2, {
+          size: 46, align: 'center', color: '#fef3c7', font: MONO, glow: GOLD, blur: 22
+        });
+        ctx.restore();
+        g.text("DON'T JUMP", RING_X, RING_Y + 34, {
+          size: 9, align: 'center', color: 'rgba(253,224,71,.55)', font: MONO
+        });
+      } else if (g.phase === 'signal') {
+        const age = t - g.signalT;
+        const sc = 1 + Math.max(0, 0.18 - age * 0.5);
+        ctx.save();
+        ctx.translate(RING_X, RING_Y + 2);
+        ctx.scale(sc, sc);
+        g.text('STRIKE!', 0, 0, {
+          size: 54, align: 'center', color: '#f0fff4', font: MONO, glow: GREEN, blur: 34
+        });
+        ctx.restore();
+        g.text('NOW', RING_X, RING_Y + 38, {
+          size: 9, align: 'center', color: 'rgba(74,222,128,.75)', font: MONO
+        });
+      } else if (g.phase === 'result') {
+        const label = g.roundWinner === 'player' ? 'YOUR ROUND' : 'RIVAL ROUND';
+        const col = g.roundWinner === 'player' ? GOLD : RIVAL;
+        g.text(label, RING_X, RING_Y - 6, {
+          size: 28, align: 'center', color: col, font: MONO, glow: col, blur: 20
+        });
+        const note = g.roundNote || (g.roundWinner === 'player' ? 'FASTER THUMB' : 'SLOWER');
+        g.text(note, RING_X, RING_Y + 26, {
+          size: 9, align: 'center', color: 'rgba(255,255,255,.55)', font: MONO
+        });
+        g.text(g.winsP + '  –  ' + g.winsA, RING_X, RING_Y + 60, {
+          size: 22, align: 'center', color: '#f4f1e8', font: MONO
+        });
+      }
+
+      // Top HUD
+      g.text('YOU', 44, 30, { size: 9, color: GOLD, font: MONO });
+      g.text('RIVAL', W - 44, 30, { size: 9, align: 'right', color: RIVAL, font: MONO });
+      drawPips(ctx, 44, 48, g.winsP, GOLD, 1);
+      drawPips(ctx, W - 44, 48, g.winsA, RIVAL, -1);
+      g.text('ROUND ' + g.round + ' / 9', 480, 30, {
+        size: 10, align: 'center', color: '#d9d2b3', font: MONO
+      });
+      g.text('FIRST TO 5', 480, 49, {
+        size: 8, align: 'center', color: 'rgba(253,224,71,.4)', font: MONO
+      });
+
+      // Combatants
+      const pActive = g.phase === 'signal' || (g.phase === 'result' && g.roundWinner === 'player');
+      const aActive = g.phase === 'signal' || (g.phase === 'result' && g.roundWinner === 'rival');
+      drawEye(g, ctx, 190, 312, GOLD, 1, pActive, g.phase);
+      drawEye(g, ctx, 770, 312, RIVAL, -1, aActive, g.phase);
+
+      // Reaction readouts
+      let pTxt = '—';
+      let pCol = 'rgba(255,255,255,.35)';
+      if (g.playerRT != null) {
+        pTxt = Math.round(g.playerRT) + ' ms';
+        pCol = g.roundWinner === 'player' ? GOLD : 'rgba(255,255,255,.62)';
+      } else if (g.phase === 'wait' || g.phase === 'signal') {
+        pTxt = 'READY';
+      } else if (g.falseStart) {
+        pTxt = 'FALSE';
+        pCol = '#ef4444';
+      }
+      g.text(pTxt, 190, 448, { size: g.playerRT != null ? 22 : 13, align: 'center', color: pCol, font: MONO });
+      g.text('YOU', 190, 470, { size: 8, align: 'center', color: 'rgba(253,224,71,.5)', font: MONO });
+
+      let aTxt = '???';
+      let aCol = 'rgba(255,255,255,.35)';
+      if (g.phase === 'result') {
+        aTxt = Math.round(g.rivalRT) + ' ms';
+        aCol = g.roundWinner === 'rival' ? RIVAL : 'rgba(255,255,255,.62)';
+      }
+      g.text(aTxt, 770, 448, {
+        size: g.phase === 'result' ? 22 : 13, align: 'center',
+        color: aCol, font: MONO
+      });
+      g.text('RIVAL', 770, 470, { size: 8, align: 'center', color: 'rgba(244,63,94,.5)', font: MONO });
+
+      // Hint
+      g.text('SPACE  ·  CLICK  ·  WATCH ACTION      REACT WHEN IT TURNS GREEN', 480, 592,
+        { size: 9, align: 'center', color: 'rgba(214,201,150,.42)', font: MONO });
+
+      if (g.flash > 0) {
+        ctx.fillStyle = 'rgba(74,222,128,' + (g.flash * 0.07) + ')';
+        if (g.flashColor === '#ef4444' || g.flashColor === RIVAL) {
+          ctx.fillStyle = 'rgba(239,68,68,' + (g.flash * 0.10) + ')';
+        }
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      if (g.done) {
+        ctx.save();
+        ctx.globalAlpha = 0.94;
+        g.text(g.finalWin ? 'DUEL WON' : 'DUEL LOST', 480, 300, {
+          size: 56, align: 'center', font: MONO,
+          color: g.finalWin ? GOLD : RIVAL,
+          glow: g.finalWin ? GOLD : RIVAL, blur: 34
+        });
+        g.text(g.winsP + '  –  ' + g.winsA, 480, 344, {
+          size: 24, align: 'center', color: '#f4f1e8', font: MONO
+        });
+        ctx.restore();
+      }
+
+      const vg = ctx.createRadialGradient(480, 300, 230, 480, 310, 690);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(6,5,1,.66)');
+      ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+    }
+  });
+
+  function drawPips(ctx, x, y, wins, color, dir) {
+    for (let i = 0; i < 5; i++) {
+      const px = x + dir * i * 26;
+      const filled = i < wins;
+      ctx.save();
+      ctx.translate(px, y);
+      ctx.rotate(Math.PI / 4);
+      if (filled) { ctx.shadowColor = color; ctx.shadowBlur = 12; }
+      ctx.fillStyle = filled ? color : 'rgba(255,255,255,.05)';
+      ctx.fillRect(-4.5, -4.5, 9, 9);
+      ctx.strokeStyle = filled ? 'rgba(255,255,255,.6)' : 'rgba(255,255,255,.14)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-4.5, -4.5, 9, 9);
+      ctx.restore();
+    }
+  }
+
+  function drawEye(g, ctx, x, y, color, dir, active, phase) {
+    const pulse = 0.5 + 0.5 * Math.sin(g.time * 2.2 + dir);
+    const open = phase === 'signal' ? 1.1 : 1;
+
+    // Brow
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,.18)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - 64, y - 58 - (phase === 'wait' ? 2 : 0));
+    ctx.quadraticCurveTo(x, y - 74 - (phase === 'signal' ? 6 : 0), x + 64, y - 58);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(1, open);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = active ? 46 + pulse * 12 : 22;
+    ctx.beginPath();
+    ctx.moveTo(-78, 0);
+    ctx.quadraticCurveTo(0, -58, 78, 0);
+    ctx.quadraticCurveTo(0, 58, -78, 0);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(10,8,3,.92)';
+    ctx.fill();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.4;
+    ctx.stroke();
+    ctx.restore();
+
+    // Iris
+    const iris = ctx.createRadialGradient(x - 8, y - 8, 3, x, y, 30);
+    iris.addColorStop(0, '#ffffff');
+    iris.addColorStop(0.22, color);
+    iris.addColorStop(0.72, 'rgba(20,12,2,.95)');
+    iris.addColorStop(1, 'rgba(0,0,0,.98)');
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = active ? 26 : 10;
+    g.circle(x, y, 29, iris);
+    ctx.restore();
+    g.circle(x, y, 29, null, 'rgba(255,255,255,.30)', 1.2);
+
+    if (dir > 0) g.circle(x + 5, y, 11, '#0a0703');
+    else {
+      ctx.save();
+      ctx.translate(x - 5, y);
+      ctx.fillStyle = '#0a0703';
+      ctx.beginPath();
+      ctx.ellipse(0, 0, 4.5, 13, 0, 0, TAU);
+      ctx.fill();
+      ctx.restore();
+    }
+    g.circle(x - 9, y - 9, 4.2, 'rgba(255,255,255,.92)');
+    g.circle(x + 8, y + 10, 2, 'rgba(255,255,255,.35)');
+
+    // Lower lid
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,.10)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x - 60, y + 34);
+    ctx.quadraticCurveTo(x, y + 56, x + 60, y + 34);
+    ctx.stroke();
+    ctx.restore();
+
+    g.text(dir > 0 ? 'YOU' : 'RIVAL', x, y - 92, {
+      size: 10, align: 'center', color: color, font: MONO
+    });
+  }
+})();
+</script>
+</body>
+</html>

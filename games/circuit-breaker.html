@@ -1,0 +1,933 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Circuit Breaker · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const W = 960, H = 600;
+  const MONO = "'IBM Plex Mono',monospace";
+  const DIRS = [
+    { bit: 1, dx: 0, dy: -1, opp: 4 },
+    { bit: 2, dx: 1, dy: 0, opp: 8 },
+    { bit: 4, dx: 0, dy: 1, opp: 1 },
+    { bit: 8, dx: -1, dy: 0, opp: 2 }
+  ];
+  const ROUNDS = [
+    { cols: 7, rows: 5, nodes: 3, time: 90 },
+    { cols: 8, rows: 5, nodes: 3, time: 90 },
+    { cols: 8, rows: 6, nodes: 4, time: 90 },
+    { cols: 9, rows: 6, nodes: 4, time: 90 },
+    { cols: 9, rows: 7, nodes: 5, time: 90 }
+  ];
+
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const rand = (a = 0, b = 1) => a + Math.random() * (b - a);
+  const randInt = (a, b) => Math.floor(rand(a, b + 1));
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+  const pad2 = n => String(n).padStart(2, '0');
+
+  function rotMask(mask, r) {
+    r = ((r % 4) + 4) % 4;
+    for (let i = 0; i < r; i++) mask = ((mask << 1) & 15) | ((mask >> 3) & 1);
+    return mask;
+  }
+  function bitCount(m) {
+    let c = 0;
+    while (m) { c += m & 1; m >>= 1; }
+    return c;
+  }
+  function fmtTime(t) {
+    const s = Math.max(0, Math.ceil(t));
+    return Math.floor(s / 60) + ':' + pad2(s % 60);
+  }
+  function shuffled(arr) {
+    for (let i = arr.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  PUZZLE GENERATION — perfect maze, solution subtree, randomized     */
+  /* ------------------------------------------------------------------ */
+  function buildPuzzle(g, cfg) {
+    const cols = cfg.cols, rows = cfg.rows, n = cols * rows;
+    const src = (rows >> 1) * cols;
+
+    // 1. perfect maze over every cell (spanning tree → always connected)
+    const links = Array.from({ length: n }, () => []);
+    const visited = new Uint8Array(n);
+    const stack = [src];
+    visited[src] = 1;
+    while (stack.length) {
+      const cur = stack[stack.length - 1];
+      const cx = cur % cols, cy = (cur / cols) | 0;
+      const cand = [];
+      for (const d of DIRS) {
+        const nx = cx + d.dx, ny = cy + d.dy;
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+        const ni = ny * cols + nx;
+        if (!visited[ni]) cand.push(ni);
+      }
+      if (cand.length) {
+        const ni = pick(cand);
+        visited[ni] = 1;
+        links[cur].push(ni);
+        links[ni].push(cur);
+        stack.push(ni);
+      } else stack.pop();
+    }
+
+    // 2. terminals spread along the far edge
+    const nodeRows = [];
+    for (let k = 0; k < cfg.nodes; k++) {
+      let ry = Math.round(k * (rows - 1) / Math.max(1, cfg.nodes - 1));
+      while (nodeRows.indexOf(ry) !== -1) ry = (ry + 1) % rows;
+      nodeRows.push(ry);
+    }
+    const nodeCells = nodeRows.map(ry => ry * cols + (cols - 1));
+
+    // 3. union of root→terminal paths = the required network
+    const parent = new Int32Array(n).fill(-1);
+    parent[src] = src;
+    const q = [src];
+    for (let qi = 0; qi < q.length; qi++) {
+      for (const nb of links[q[qi]]) {
+        if (parent[nb] === -1) { parent[nb] = q[qi]; q.push(nb); }
+      }
+    }
+    const used = new Set();
+    const edgeKey = (a, b) => Math.min(a, b) + ':' + Math.max(a, b);
+    for (const term of nodeCells) {
+      let cur = term;
+      while (cur !== src) {
+        const p = parent[cur];
+        if (p < 0) break;
+        used.add(edgeKey(cur, p));
+        cur = p;
+      }
+    }
+
+    const core = new Uint8Array(n);
+    const tiles = [];
+    for (let i = 0; i < n; i++) {
+      const x = i % cols, y = (i / cols) | 0;
+      let m = 0;
+      for (const d of DIRS) {
+        const nx = x + d.dx, ny = y + d.dy;
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+        if (used.has(edgeKey(i, ny * cols + nx))) m |= d.bit;
+      }
+      if (i === src) m |= 8; // live feed from the mains
+      const coreMask = m;
+      // A lone port becomes an elbow/straight with one decorative stub,
+      // keeping the board full of readable pipe tiles.
+      if (bitCount(m) < 2) {
+        const choices = DIRS.filter(d => {
+          if (m & d.bit) return false;
+          const nx = x + d.dx, ny = y + d.dy;
+          return nx >= 0 && ny >= 0 && nx < cols && ny < rows;
+        });
+        if (choices.length) m |= pick(choices).bit;
+      }
+      const rot = randInt(0, 3);
+      tiles.push({ core: coreMask, sol: m, rot, mask: rotMask(m, rot), anim: 0 });
+    }
+
+    const nodes = nodeCells.map((idx, i) => ({
+      idx, x: (idx % cols), y: ((idx / cols) | 0), on: false, paid: false, flash: 0, row: nodeRows[i]
+    }));
+
+    const board = { tiles, nodes, src, nodeMap: {} };
+    nodes.forEach((nd, i) => { board.nodeMap[nd.idx] = i; });
+    g.board = board;
+    g.n = n;
+    g.cols = cols; g.rows = rows;
+
+    // 4. scramble, but never begin with a terminal already lit
+    for (let attempt = 0; attempt < 60; attempt++) {
+      for (const t of tiles) {
+        t.rot = randInt(0, 3);
+        t.mask = rotMask(t.sol, t.rot);
+        t.anim = 0;
+      }
+      const probe = floodPuzzle(g);
+      if (!nodes.some(nd => probe.lit[nd.idx])) break;
+    }
+    return board;
+  }
+
+  function floodPuzzle(g) {
+    const n = g.n, cols = g.cols, rows = g.rows;
+    const lit = new Uint8Array(n);
+    const lev = new Int16Array(n).fill(-1);
+    const q = [g.board.src];
+    lit[g.board.src] = 1;
+    lev[g.board.src] = 0;
+    for (let qi = 0; qi < q.length; qi++) {
+      const i = q[qi], x = i % cols, y = (i / cols) | 0;
+      const m = g.board.tiles[i].mask;
+      for (const d of DIRS) {
+        if (!(m & d.bit)) continue;
+        const nx = x + d.dx, ny = y + d.dy;
+        if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+        const ni = ny * cols + nx;
+        if (!(g.board.tiles[ni].mask & d.opp)) continue;
+        if (lit[ni]) continue;
+        lit[ni] = 1;
+        lev[ni] = lev[i] + 1;
+        q.push(ni);
+      }
+    }
+    return { lit, lev };
+  }
+
+  function refreshPower(g, award) {
+    const res = floodPuzzle(g);
+    g.lit = res.lit;
+    g.lev = res.lev;
+    let gained = 0;
+    for (const nd of g.board.nodes) {
+      const was = nd.on;
+      nd.on = !!res.lit[nd.idx];
+      if (nd.on && !nd.paid) {
+        nd.paid = true;
+        gained++;
+        const p = cellPos(g, nd.idx);
+        g.addScore(150 + g.round * 25);
+        g.burst(p.x, p.y, '#34d399', 26, { speed: 230, life: 0.8, size: 3.5 });
+        g.burst(p.x, p.y, '#eafff5', 8, { speed: 130, life: 0.5, size: 2 });
+        pushPop(g, p.x, p.y - 18, '+' + (150 + g.round * 25), '#a7f3d0');
+        nd.flash = 1;
+      } else if (!nd.on) {
+        nd.onT = 0;
+      }
+      if (!was && nd.on && award) g.shake(3, 0.15);
+    }
+    if (gained && award) {
+      g.audio.sfx('power');
+      g.haptic('coin');
+    }
+    return gained;
+  }
+
+  function cellPos(g, i) {
+    const col = i % g.cols, row = (i / g.cols) | 0;
+    return {
+      x: g.bx + col * g.cell + g.cell / 2,
+      y: g.by + row * g.cell + g.cell / 2
+    };
+  }
+
+  function cellAt(g, x, y) {
+    if (x < g.bx || y < g.by) return -1;
+    const c = Math.floor((x - g.bx) / g.cell);
+    const r = Math.floor((y - g.by) / g.cell);
+    if (c < 0 || r < 0 || c >= g.cols || r >= g.rows) return -1;
+    return r * g.cols + c;
+  }
+
+  function tileSolved(t) {
+    return (t.mask & t.core) === t.core;
+  }
+
+  function firstUnsolved(g) {
+    for (let i = 0; i < g.board.tiles.length; i++) {
+      if (!tileSolved(g.board.tiles[i])) return i;
+    }
+    return 0;
+  }
+
+  function pushPop(g, x, y, text, color) {
+    g.pops.push({ x, y, text, color, life: 1.1, max: 1.1 });
+    if (g.pops.length > 12) g.pops.shift();
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  ROUND FLOW                                                         */
+  /* ------------------------------------------------------------------ */
+  function startRound(g, ri) {
+    const cfg = ROUNDS[Math.min(ri, ROUNDS.length - 1)];
+    g.round = ri;
+    g.cfg = cfg;
+    g.phase = 'play';
+    g.timeLeft = cfg.time;
+    g.shuffles = 3;
+    g.cols = cfg.cols;
+    g.rows = cfg.rows;
+    g.cell = Math.max(44, Math.floor(Math.min(580 / cfg.cols, 400 / cfg.rows)));
+    g.bx = Math.round((W - cfg.cols * g.cell) / 2);
+    g.by = 126 + Math.round((400 - cfg.rows * g.cell) / 2);
+    g.selT = 2.2;
+    g.selAuto = true;
+    g.hover = -1;
+    g.clearT = 0;
+    g.clearStat = null;
+    g.pops = [];
+
+    buildPuzzle(g, cfg);
+    refreshPower(g, false);
+    // keep a fresh terminal lit by a lucky scramble out of the opening state
+    let guard = 0;
+    while (g.board.nodes.some(nd => nd.on) && guard++ < 50) {
+      for (const t of g.board.tiles) {
+        t.rot = randInt(0, 3);
+        t.mask = rotMask(t.sol, t.rot);
+      }
+      refreshPower(g, false);
+    }
+    g.sel = firstUnsolved(g);
+  }
+
+  function rotateTile(g, idx) {
+    if (g.phase !== 'play' || idx < 0 || idx >= g.board.tiles.length) return;
+    const t = g.board.tiles[idx];
+    t.rot = (t.rot + 1) % 4;
+    t.mask = rotMask(t.sol, t.rot);
+    t.anim = 1;
+    g.sel = idx;
+    g.selT = 2.2;
+    g.audio.sfx('tick');
+    g.haptic('tick');
+    refreshPower(g, true);
+    if (g.board.nodes.every(nd => nd.on)) roundClear(g);
+  }
+
+  function shuffleBoard(g) {
+    if (g.phase !== 'play' || g.shuffles <= 0) return;
+    g.shuffles--;
+    g.timeLeft = Math.max(1, g.timeLeft - 7);
+    for (const t of g.board.tiles) {
+      if (!tileSolved(t)) {
+        t.rot = randInt(0, 3);
+        t.mask = rotMask(t.sol, t.rot);
+        t.anim = 1;
+      }
+    }
+    g.sel = firstUnsolved(g);
+    g.selT = 2.2;
+    refreshPower(g, true);
+    g.audio.sfx('whoosh');
+    g.haptic('tick');
+    pushPop(g, W / 2, 150, 'RESHUFFLE −7s', '#fbbf24');
+    if (g.board.nodes.every(nd => nd.on)) roundClear(g);
+  }
+
+  function roundClear(g) {
+    if (g.phase !== 'play') return;
+    g.phase = 'clear';
+    g.clearT = 1.9;
+    const bonus = 400 + g.round * 100 + Math.round(g.timeLeft * 5);
+    g.clearStat = { bonus, time: Math.ceil(g.timeLeft) };
+    g.addScore(bonus);
+    g.audio.sfx('win');
+    g.haptic('coin');
+    g.shake(6, 0.35);
+    for (const nd of g.board.nodes) {
+      const p = cellPos(g, nd.idx);
+      g.burst(p.x, p.y, '#34d399', 22, { speed: 250, life: 1, size: 4 });
+      g.burst(p.x, p.y, '#f0fdf4', 8, { speed: 150, life: 0.6, size: 2 });
+    }
+  }
+
+  function endGame(g) {
+    if (g.ended) return;
+    g.ended = true;
+    g.timeLeft = 0;
+    g.audio.sfx('buzzer');
+    g.haptic('crash');
+    g.shake(10, 0.55);
+    g.over('Grid collapsed on round ' + (g.round + 1) + ' · ' + g.board.nodes.filter(n => n.on).length + '/' + g.board.nodes.length + ' nodes lit');
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  MOUNT                                                              */
+  /* ------------------------------------------------------------------ */
+  WristGame.mount({
+    id: 'circuit-breaker',
+    title: 'Circuit Breaker',
+    tagline: 'Connect the grid before it dies.',
+    category: 'Puzzle',
+    accent: '#34d399',
+    bg: '#04100b',
+    controls: [
+      { keys: 'CLICK / TAP', label: 'ROTATE' },
+      { keys: 'SPACE', label: 'ROTATE SELECTED' },
+      { keys: 'R', label: 'SHUFFLE' },
+      { keys: 'WATCH', label: 'LEFT / ACTION' }
+    ],
+    tips: [
+      'Rotate tiles to run an unbroken trace from the source to every terminal.',
+      'Powered copper glows bright. Dead traces are dull green.',
+      'R burns 7 seconds to reshuffle unsolved tiles — three per round.',
+      'Five grids, each larger than the last. Each one has a 90-second clock.'
+    ],
+
+    init(g) {
+      g.score = 0;
+      g.ended = false;
+      g.phase = 'play';
+      g.round = 0;
+      g.timeLeft = 90;
+      g.shuffles = 3;
+      g.sel = 0;
+      g.selT = 2.2;
+      g.selAuto = true;
+      g.hover = -1;
+      g.clearT = 0;
+      g.victoryT = 0;
+      g.clearStat = null;
+      g.pops = [];
+      g.lit = null;
+      g.lev = null;
+      g.board = null;
+      g.decor = makeDecor();
+      g.motes = makeMotes();
+      g.audio.stopMusic();
+
+      if (!g._rKey) {
+        g._rKey = e => {
+          if (e.code === 'KeyR' && g.state === 'running') {
+            e.preventDefault();
+            shuffleBoard(g);
+          }
+        };
+        window.addEventListener('keydown', g._rKey);
+      }
+
+      startRound(g, 0);
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 196, bpm: 94, scale: [0, 3, 5, 7, 10], wave: 'triangle', gain: 0.04 });
+    },
+
+    onAction(g, action, down) {
+      if (!down) return;
+      if (action === 'left' || action === 'right') {
+        if (g.phase !== 'play') return;
+        const d = action === 'left' ? -1 : 1;
+        let s = g.sel;
+        for (let k = 0; k < g.n; k++) {
+          s = (s + d + g.n) % g.n;
+          if (!tileSolved(g.board.tiles[s])) break;
+        }
+        g.sel = s;
+        g.selT = 2.4;
+        g.audio.sfx('tick');
+        g.haptic('tick');
+      } else if (action === 'up' || action === 'down') {
+        if (g.phase !== 'play') return;
+        const d = action === 'up' ? -g.cols : g.cols;
+        g.sel = (g.sel + d + g.n) % g.n;
+        g.selT = 2.4;
+        g.audio.sfx('tick');
+      } else if (action === 'action') {
+        rotateTile(g, g.sel);
+      }
+    },
+
+    onPointer(g, x, y, type) {
+      if (type === 'move') {
+        g.hover = cellAt(g, x, y);
+      } else if (type === 'down') {
+        const idx = cellAt(g, x, y);
+        g.hover = idx;
+        if (idx >= 0) rotateTile(g, idx);
+      }
+    },
+
+    update(g, dt) {
+      for (const t of g.board.tiles) if (t.anim > 0) t.anim = Math.max(0, t.anim - dt * 5.5);
+      for (const nd of g.board.nodes) {
+        if (nd.flash > 0) nd.flash = Math.max(0, nd.flash - dt * 2.2);
+      }
+      for (let i = g.pops.length - 1; i >= 0; i--) {
+        const p = g.pops[i];
+        p.life -= dt;
+        p.y -= 24 * dt;
+        if (p.life <= 0) g.pops.splice(i, 1);
+      }
+
+      if (g.phase === 'play') {
+        g.timeLeft -= dt;
+        g.selT -= dt;
+        if (g.selT <= 0) {
+          g.selT = 2.2;
+          const start = g.sel;
+          for (let k = 1; k <= g.n; k++) {
+            const s = (start + k) % g.n;
+            if (!tileSolved(g.board.tiles[s])) { g.sel = s; break; }
+          }
+        }
+        if (g.timeLeft <= 0) { endGame(g); return; }
+      } else if (g.phase === 'clear') {
+        g.clearT -= dt;
+        if (g.clearT <= 0) {
+          if (g.round >= ROUNDS.length - 1) {
+            g.phase = 'victory';
+            g.victoryT = 1.9;
+            g.audio.stopMusic();
+            g.audio.sfx('win');
+            g.haptic('start');
+          } else {
+            startRound(g, g.round + 1);
+          }
+        }
+      } else if (g.phase === 'victory') {
+        g.victoryT -= dt;
+        if (g.victoryT <= 0 && !g.ended) {
+          g.ended = true;
+          g.over('Master circuit restored · all five grids online');
+        }
+      }
+    },
+
+    draw(g, ctx) {
+      drawBackground(g, ctx);
+      drawBoard(g, ctx);
+      drawHud(g, ctx);
+      drawPops(g, ctx);
+      if (g.phase === 'clear') drawClearBanner(g, ctx);
+      if (g.phase === 'victory') drawVictoryBanner(g, ctx);
+      drawVignette(g, ctx);
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  DRAWING                                                            */
+  /* ------------------------------------------------------------------ */
+  function makeDecor() {
+    const out = [];
+    for (let i = 0; i < 16; i++) {
+      let x = rand(24, 936), y = rand(24, 576);
+      const pts = [{ x, y }];
+      let horiz = i % 2 === 0;
+      for (let s = 0; s < 3; s++) {
+        const len = rand(36, 118) * (Math.random() < 0.5 ? -1 : 1);
+        x = clamp(x + (horiz ? len : 0), 10, 950);
+        y = clamp(y + (horiz ? 0 : len), 10, 590);
+        pts.push({ x, y });
+        horiz = !horiz;
+      }
+      out.push({ pts, via: Math.random() < 0.55 });
+    }
+    return out;
+  }
+
+  function makeMotes() {
+    const out = [];
+    for (let i = 0; i < 26; i++) {
+      out.push({ x: rand(20, 940), y: rand(20, 580), r: rand(0.6, 1.8), sp: rand(3, 14), ph: rand(0, 6.28) });
+    }
+    return out;
+  }
+
+  function drawBackground(g, ctx) {
+    g.clear('#04100b');
+    const bg = ctx.createRadialGradient(480, 240, 30, 480, 310, 640);
+    bg.addColorStop(0, 'rgba(22, 92, 66, .34)');
+    bg.addColorStop(0.5, 'rgba(8, 38, 28, .22)');
+    bg.addColorStop(1, 'rgba(2, 8, 6, 0)');
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+
+    g.grid('rgba(52,211,153,.035)', 48);
+
+    // PCB decorative traces
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const d of g.decor) {
+      ctx.strokeStyle = 'rgba(52,211,153,.075)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(d.pts[0].x, d.pts[0].y);
+      for (let i = 1; i < d.pts.length; i++) ctx.lineTo(d.pts[i].x, d.pts[i].y);
+      ctx.stroke();
+      if (d.via) {
+        const end = d.pts[d.pts.length - 1];
+        ctx.strokeStyle = 'rgba(52,211,153,.16)';
+        ctx.beginPath(); ctx.arc(end.x, end.y, 3, 0, Math.PI * 2); ctx.stroke();
+      }
+    }
+    ctx.restore();
+
+    // drifting motes
+    for (const m of g.motes) {
+      const y = (m.y + g.time * m.sp) % H;
+      const a = 0.12 + 0.12 * Math.sin(g.time * 1.4 + m.ph);
+      ctx.globalAlpha = a;
+      ctx.fillStyle = '#6ee7b7';
+      ctx.fillRect(m.x, y, m.r, m.r);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawBoard(g, ctx) {
+    const cols = g.cols, rows = g.rows, cell = g.cell;
+    const bw = cols * cell, bh = rows * cell;
+    const bx = g.bx, by = g.by;
+
+    // board plate
+    ctx.save();
+    ctx.shadowColor = 'rgba(52,211,153,.24)';
+    ctx.shadowBlur = 42;
+    g.roundRect(bx - 16, by - 16, bw + 32, bh + 32, 20, 'rgba(4,17,12,.9)', 'rgba(52,211,153,.18)', 1.5);
+    ctx.restore();
+    const inner = ctx.createLinearGradient(0, by, 0, by + bh);
+    inner.addColorStop(0, 'rgba(8,32,24,.55)');
+    inner.addColorStop(1, 'rgba(3,14,10,.65)');
+    g.roundRect(bx - 8, by - 8, bw + 16, bh + 16, 14, inner, 'rgba(52,211,153,.08)', 1);
+
+    // corner ticks
+    ctx.strokeStyle = 'rgba(52,211,153,.3)';
+    ctx.lineWidth = 1.5;
+    const pad = 13;
+    for (const [cx, cy, sx, sy] of [
+      [bx - 8, by - 8, 1, 1], [bx + bw + 8, by - 8, -1, 1],
+      [bx - 8, by + bh + 8, 1, -1], [bx + bw + 8, by + bh + 8, -1, -1]
+    ]) {
+      ctx.beginPath();
+      ctx.moveTo(cx + sx * 16, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy + sy * 16);
+      ctx.stroke();
+    }
+
+    const sy = g.by + (rows >> 1) * cell + cell / 2;
+    drawMains(g, ctx, bx, sy, cell);
+
+    // tiles
+    for (let i = 0; i < g.board.tiles.length; i++) drawTile(g, ctx, i);
+
+    // current flow pulses
+    if (g.lit) {
+      for (let i = 0; i < g.n; i++) {
+        if (!g.lit[i]) continue;
+        const t = g.board.tiles[i];
+        const x = i % cols, y = (i / cols) | 0;
+        for (const d of DIRS) {
+          if (d.bit !== 2 && d.bit !== 4) continue;
+          if (!(t.mask & d.bit)) continue;
+          const nx = x + d.dx, ny = y + d.dy;
+          if (nx < 0 || ny < 0 || nx >= cols || ny >= rows) continue;
+          const ni = ny * cols + nx;
+          if (!g.lit[ni]) continue;
+          if (!(g.board.tiles[ni].mask & d.opp)) continue;
+          const a = cellPos(g, i), b = cellPos(g, ni);
+          const phase = ((g.time * 0.55 + (g.lev ? g.lev[i] : 0) * 0.22) % 1);
+          const px = a.x + (b.x - a.x) * phase;
+          const py = a.y + (b.y - a.y) * phase;
+          ctx.globalAlpha = 0.14;
+          g.circle(px, py, 8, '#6ee7b7');
+          ctx.globalAlpha = 0.5;
+          g.circle(px, py, 3.6, '#a7f3d0');
+          ctx.globalAlpha = 0.95;
+          g.circle(px, py, 1.5, '#ffffff');
+          ctx.globalAlpha = 1;
+        }
+      }
+    }
+
+    // terminal LEDs
+    for (const nd of g.board.nodes) {
+      const p = cellPos(g, nd.idx);
+      drawNode(g, ctx, p.x, p.y, cell, nd);
+    }
+
+    // selector brackets
+    if (g.phase === 'play') {
+      const col = g.sel % cols, row = (g.sel / cols) | 0;
+      const x = bx + col * cell + cell / 2;
+      const y = by + row * cell + cell / 2;
+      const r = cell / 2 - 2;
+      const pulse = 0.55 + 0.25 * Math.sin(g.time * 5.4);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(209,250,229,' + pulse + ')';
+      ctx.lineWidth = 2.4;
+      ctx.lineCap = 'round';
+      const arm = Math.min(13, cell * 0.2);
+      for (const [sx, sy] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+        ctx.beginPath();
+        ctx.moveTo(x + sx * r - sx * arm, y + sy * r);
+        ctx.lineTo(x + sx * r, y + sy * r);
+        ctx.lineTo(x + sx * r, y + sy * r - sy * arm);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    // hover highlight
+    if (g.hover >= 0 && g.hover < g.n && g.hover !== g.sel) {
+      const p = cellPos(g, g.hover);
+      g.roundRect(p.x - cell / 2 + 4, p.y - cell / 2 + 4, cell - 8, cell - 8, 9, null, 'rgba(236,255,246,.14)', 1.2);
+    }
+  }
+
+  function drawMains(g, ctx, bx, sy, cell) {
+    const cableW = Math.max(8, cell * 0.14);
+    const x0 = bx - 42, x1 = bx + cell / 2;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.shadowColor = '#34d399';
+    ctx.shadowBlur = 16;
+    ctx.strokeStyle = 'rgba(52,211,153,.34)';
+    ctx.lineWidth = cableW + 3;
+    ctx.beginPath(); ctx.moveTo(x0, sy); ctx.lineTo(x1, sy); ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#6ee7b7';
+    ctx.lineWidth = Math.max(2.5, cableW * 0.32);
+    ctx.beginPath(); ctx.moveTo(x0, sy); ctx.lineTo(x1, sy); ctx.stroke();
+    ctx.restore();
+    // transformer block
+    g.roundRect(x0 - 11, sy - 16, 16, 32, 4, '#0a2b1f', 'rgba(110,231,183,.5)', 1.2);
+    g.text('M', x0 - 3, sy + 4, { size: 10, align: 'center', color: '#6ee7b7', font: MONO });
+  }
+
+  function drawTile(g, ctx, i) {
+    const cell = g.cell;
+    const col = i % g.cols, row = (i / g.cols) | 0;
+    const cx = g.bx + col * cell + cell / 2;
+    const cy = g.by + row * cell + cell / 2;
+    const t = g.board.tiles[i];
+    const lit = !!(g.lit && g.lit[i]);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    if (t.anim > 0) {
+      ctx.rotate(-t.anim * Math.PI / 2);
+      const sc = 1 + Math.sin((1 - t.anim) * Math.PI) * 0.035;
+      ctx.scale(sc, sc);
+    }
+
+    const inset = 3;
+    const size = cell - inset * 2;
+
+    // tile body
+    g.roundRect(-size / 2, -size / 2, size, size, Math.min(11, cell * 0.16),
+      lit ? 'rgba(8,36,27,.96)' : 'rgba(6,23,18,.94)',
+      lit ? 'rgba(52,211,153,.24)' : 'rgba(52,211,153,.08)', 1);
+    // top bevel
+    ctx.strokeStyle = 'rgba(236,255,246,.045)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(-size / 2 + 6, -size / 2 + 3);
+    ctx.lineTo(size / 2 - 6, -size / 2 + 3);
+    ctx.stroke();
+
+    // traces
+    const half = cell / 2 - 1;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (const d of DIRS) {
+      if (!(t.mask & d.bit)) continue;
+      ctx.moveTo(0, 0);
+      ctx.lineTo(d.dx * half, d.dy * half);
+    }
+    if (lit) {
+      ctx.save();
+      ctx.shadowColor = '#34d399';
+      ctx.shadowBlur = 15;
+      ctx.strokeStyle = 'rgba(52,211,153,.62)';
+      ctx.lineWidth = Math.max(7, cell * 0.155);
+      ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = '#6ee7b7';
+      ctx.lineWidth = Math.max(3, cell * 0.056);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(240,253,244,.62)';
+      ctx.lineWidth = Math.max(1, cell * 0.016);
+      ctx.stroke();
+    } else {
+      ctx.strokeStyle = 'rgba(52,211,153,.13)';
+      ctx.lineWidth = Math.max(6, cell * 0.135);
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(52,211,153,.28)';
+      ctx.lineWidth = Math.max(2, cell * 0.045);
+      ctx.stroke();
+    }
+
+    // hub
+    if (lit) {
+      g.circle(0, 0, Math.max(3.2, cell * 0.058), '#d1fae5');
+    } else {
+      g.circle(0, 0, Math.max(2.2, cell * 0.036), 'rgba(52,211,153,.3)');
+    }
+    ctx.restore();
+  }
+
+  function drawNode(g, ctx, x, y, cell, nd) {
+    const rad = cell * 0.19;
+    const pulse = 0.5 + 0.5 * Math.sin(g.time * 4 + nd.row);
+    ctx.save();
+    if (nd.on) {
+      ctx.shadowColor = '#34d399';
+      ctx.shadowBlur = 22 + nd.flash * 18;
+    }
+    g.circle(x, y, rad, nd.on ? '#0b3b2a' : '#071b14', nd.on ? '#a7f3d0' : 'rgba(52,211,153,.42)', 2);
+    ctx.restore();
+    if (nd.on) {
+      g.circle(x, y, rad * 0.55, '#34d399');
+      g.circle(x, y, rad * 0.28, '#f0fdf4');
+      ctx.strokeStyle = 'rgba(52,211,153,' + (0.22 + pulse * 0.25) + ')';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.arc(x, y, rad + 5 + pulse * 4, 0, Math.PI * 2); ctx.stroke();
+    } else {
+      ctx.fillStyle = 'rgba(52,211,153,' + (0.16 + pulse * 0.12) + ')';
+      ctx.beginPath(); ctx.arc(x, y, rad * 0.42, 0, Math.PI * 2); ctx.fill();
+      ctx.strokeStyle = 'rgba(52,211,153,.16)';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(x, y, rad + 4, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  function drawHud(g, ctx) {
+    // round
+    g.text('ROUND ' + pad2(g.round + 1) + ' / ' + pad2(ROUNDS.length), 48, 40,
+      { size: 12, font: MONO, color: '#7ee7c1' });
+    for (let i = 0; i < ROUNDS.length; i++) {
+      g.roundRect(48 + i * 18, 50, 12, 4, 2, i <= g.round ? '#34d399' : 'rgba(52,211,153,.17)');
+    }
+    g.text('GRID ' + g.cols + ' × ' + g.rows, 48, 78, { size: 10, font: MONO, color: '#5e8a77' });
+
+    // timer
+    const ratio = clamp(g.timeLeft / g.cfg.time, 0, 1);
+    const urgent = g.timeLeft <= 15;
+    g.text('MAIN POWER', 480, 34, { size: 9, align: 'center', font: MONO, color: '#6b9483' });
+    g.text(fmtTime(g.timeLeft), 480, 72, {
+      size: 34, align: 'center', font: MONO,
+      color: urgent ? '#fb7185' : '#ecfdf5',
+      glow: urgent ? '#fb7185' : '#34d399', blur: 18
+    });
+    g.roundRect(320, 84, 320, 6, 3, 'rgba(52,211,153,.12)');
+    if (ratio > 0) {
+      g.roundRect(320, 84, Math.max(3, 320 * ratio), 6, 3, urgent ? '#fb7185' : '#34d399');
+    }
+
+    // node count
+    const onCount = g.board.nodes.filter(nd => nd.on).length;
+    g.text('TERMINALS', 912, 40, { size: 9, align: 'right', font: MONO, color: '#6b9483' });
+    g.text(onCount + ' / ' + g.board.nodes.length, 912, 72, {
+      size: 28, align: 'right', font: MONO,
+      color: onCount === g.board.nodes.length ? '#34d399' : '#eafff5'
+    });
+    const total = g.board.nodes.length;
+    for (let i = 0; i < total; i++) {
+      const on = g.board.nodes[i].on;
+      const x = 912 - (total - 1 - i) * 14 - 6;
+      g.circle(x, 84, 3.4, on ? '#34d399' : 'rgba(52,211,153,.18)');
+    }
+
+    drawCards(g, ctx);
+
+    // bottom hint
+    g.text('CLICK / TAP A TILE TO ROTATE', 480, 574,
+      { size: 10, align: 'center', font: MONO, color: '#5c8172' });
+    g.text('SPACE ROTATES THE WATCH SELECTOR · R RESHUFFLES', 480, 592,
+      { size: 9, align: 'center', font: MONO, color: 'rgba(92,129,114,.6)' });
+  }
+
+  function drawCards(g, ctx) {
+    // source card
+    card(g, ctx, 44, 170, 124, 106, 'SOURCE');
+    ctx.save();
+    ctx.shadowColor = '#34d399';
+    ctx.shadowBlur = 14;
+    g.circle(68, 214, 7, '#34d399');
+    ctx.restore();
+    g.text('ONLINE', 68, 248, { size: 13, font: MONO, color: '#d1fae5' });
+    g.text('MAINS 100%', 68, 264, { size: 8.5, font: MONO, color: '#5f8c79' });
+
+    // shuffle card
+    card(g, ctx, 44, 300, 124, 122, 'SHUFFLE');
+    g.text('×' + g.shuffles, 68, 354, { size: 30, font: MONO, color: g.shuffles > 0 ? '#fbbf24' : '#4a6157' });
+    g.text('[ R ]  −7s', 68, 378, { size: 9, font: MONO, color: '#7d9c8e' });
+    for (let i = 0; i < 3; i++) {
+      g.roundRect(68 + i * 22, 392, 15, 4, 2, i < g.shuffles ? '#fbbf24' : 'rgba(251,191,36,.15)');
+    }
+
+    // terminals card
+    const n = g.board.nodes.length;
+    const h = 62 + n * 34;
+    card(g, ctx, 792, 170, 124, h, 'TERMINALS');
+    for (let i = 0; i < n; i++) {
+      const nd = g.board.nodes[i];
+      const y = 224 + i * 34;
+      ctx.save();
+      if (nd.on) { ctx.shadowColor = '#34d399'; ctx.shadowBlur = 10; }
+      g.circle(812, y - 4, 4.2, nd.on ? '#34d399' : '#102a20', nd.on ? null : 'rgba(52,211,153,.3)', 1);
+      ctx.restore();
+      g.text('NODE ' + pad2(i + 1), 824, y, { size: 8.5, font: MONO, color: nd.on ? '#c7f9e5' : '#557a6b' });
+      g.text(nd.on ? 'ON' : 'DARK', 904, y, { size: 8, align: 'right', font: MONO, color: nd.on ? '#34d399' : '#3f5f53' });
+    }
+  }
+
+  function card(g, ctx, x, y, w, h, title) {
+    g.roundRect(x, y, w, h, 12, 'rgba(5,23,17,.72)', 'rgba(52,211,153,.11)', 1);
+    ctx.strokeStyle = 'rgba(52,211,153,.22)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x + 12, y + 12); ctx.lineTo(x + 20, y + 12); ctx.stroke();
+    g.text(title, x + 12, y + 28, { size: 8.5, font: MONO, color: '#5f8c79' });
+  }
+
+  function drawPops(g, ctx) {
+    for (const p of g.pops) {
+      const a = clamp(p.life / p.max, 0, 1);
+      g.text(p.text, p.x, p.y, {
+        size: 13, align: 'center', font: MONO, color: p.color,
+        alpha: a, glow: p.color, blur: 8
+      });
+    }
+  }
+
+  function drawClearBanner(g, ctx) {
+    const t = 1.9 - g.clearT;
+    const a = Math.min(clamp(t / 0.22, 0, 1), clamp(g.clearT / 0.35, 0, 1));
+    const scale = 0.94 + 0.06 * clamp(t / 0.22, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(480, 306);
+    ctx.scale(scale, scale);
+    ctx.shadowColor = 'rgba(52,211,153,.5)';
+    ctx.shadowBlur = 40;
+    g.roundRect(-240, -58, 480, 116, 18, 'rgba(4,24,17,.94)', 'rgba(52,211,153,.5)', 1.5);
+    ctx.shadowBlur = 0;
+    g.text('GRID ONLINE', 0, -8, { size: 32, align: 'center', font: MONO, color: '#a7f3d0', glow: '#34d399', blur: 18 });
+    g.text('+' + g.clearStat.bonus + ' PTS  ·  ' + g.clearStat.time + 's LEFT', 0, 28,
+      { size: 11, align: 'center', font: MONO, color: '#7ee7c1' });
+    ctx.restore();
+  }
+
+  function drawVictoryBanner(g, ctx) {
+    const t = 1.9 - g.victoryT;
+    const a = Math.min(clamp(t / 0.25, 0, 1), clamp(g.victoryT / 0.4, 0, 1));
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.shadowColor = 'rgba(52,211,153,.55)';
+    ctx.shadowBlur = 50;
+    g.roundRect(250, 248, 460, 124, 20, 'rgba(4,26,19,.95)', 'rgba(52,211,153,.62)', 1.5);
+    ctx.shadowBlur = 0;
+    g.text('CIRCUIT RESTORED', 480, 308, { size: 29, align: 'center', font: MONO, color: '#d1fae5', glow: '#34d399', blur: 20 });
+    g.text('ALL FIVE GRIDS ONLINE', 480, 340, { size: 10, align: 'center', font: MONO, color: '#7ee7c1' });
+    ctx.restore();
+  }
+
+  function drawVignette(g, ctx) {
+    const v = ctx.createRadialGradient(480, 300, 230, 480, 300, 640);
+    v.addColorStop(0, 'rgba(0,0,0,0)');
+    v.addColorStop(1, 'rgba(1,8,5,.58)');
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, W, H);
+  }
+})();
+</script>
+</body>
+</html>

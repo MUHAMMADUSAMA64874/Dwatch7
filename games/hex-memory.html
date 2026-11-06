@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Hex Memory · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const U = WristGame.util;
+  const clamp = U.clamp, lerp = U.lerp, rand = U.rand, randInt = U.randInt, dist = U.dist;
+  const TAU = Math.PI * 2;
+  const W = 960, H = 600;
+  const CX = 404, CY = 318;
+  const RING = 172, PAD_R = 68, RING_R = 262;
+  const MONO = "'IBM Plex Mono',monospace";
+
+  const HUE = [162, 172, 194, 235, 292, 42];
+  const FREQ = [329.63, 392.00, 440.00, 523.25, 587.33, 659.25];
+  const PADS = HUE.map((h, i) => {
+    const a = -Math.PI / 2 + i * TAU / 6;
+    return { x: CX + Math.cos(a) * RING, y: CY + Math.sin(a) * RING, hue: h, a };
+  });
+
+  function hexPath(ctx, x, y, r, rot) {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const a = (rot || 0) + i * TAU / 6;
+      const px = x + Math.cos(a) * r;
+      const py = y + Math.sin(a) * r;
+      if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+    }
+    ctx.closePath();
+  }
+
+  function padAt(g, x, y) {
+    let best = -1, bestD = 1e9;
+    for (let i = 0; i < 6; i++) {
+      const d = dist(x, y, PADS[i].x, PADS[i].y);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return bestD <= PAD_R * 1.04 ? best : -1;
+  }
+
+  function padTone(g, i, strong) {
+    const f = FREQ[i];
+    g.audio.tone(f, strong ? 0.36 : 0.22, 'sine', strong ? 0.19 : 0.15);
+    g.audio.tone(f * 2, strong ? 0.2 : 0.11, 'triangle', 0.05);
+  }
+
+  function lightPad(g, i) {
+    g.litPad = i;
+    g.padGlow[i] = 1;
+    padTone(g, i, true);
+  }
+
+  WristGame.mount({
+    id: 'hex-memory',
+    title: 'Hex Memory',
+    tagline: 'Repeat the pattern. Trust the glow.',
+    category: 'Puzzle',
+    accent: '#6ee7b7',
+    bg: '#04100c',
+    controls: [
+      { keys: '1 – 6', label: 'PADS' },
+      { keys: 'CLICK', label: 'PADS' },
+      { keys: 'WATCH', label: 'LEFT / ACTION / RIGHT' }
+    ],
+    tips: [
+      'Watch the honeycomb, then echo it back in order.',
+      'Each round adds one more step. A wrong pad ends the run.',
+      'Fast, clean rounds earn a perfect bonus.'
+    ],
+
+    init(g) {
+      g.score = 0;
+      g.round = 1;
+      g.sequence = [randInt(0, 5), randInt(0, 5)];
+      g.phase = 'show';
+      g.showStep = 0;
+      g.showTimer = 0.6;
+      g.litPad = -1;
+      g.inputIdx = 0;
+      g.inputStart = 0;
+      g.lastTap = 0;
+      g.perfect = true;
+      g.perfectRounds = 0;
+      g.focus = 0;
+      g.padGlow = [0, 0, 0, 0, 0, 0];
+      g.floats = [];
+      g.clearT = 0;
+      g.failT = 0;
+      g.failPad = -1;
+      g.flash = 0;
+      g.motes = Array.from({ length: 22 }, (_, i) => ({
+        x: (i * 137.5) % W,
+        y: (i * 83.7) % H,
+        r: 0.8 + (i % 4) * 0.6,
+        spd: 5 + (i % 5) * 3,
+        ph: i * 1.7
+      }));
+      g.audio.stopMusic();
+      if (!g._hexKeys) {
+        g._hexKeys = true;
+        window.addEventListener('keydown', e => {
+          if (g.state !== 'running') return;
+          const m = /^(?:Digit|Numpad)([1-6])$/.exec(e.code);
+          if (!m) return;
+          e.preventDefault();
+          if (e.repeat) return;
+          pressPad(g, parseInt(m[1], 10) - 1);
+        });
+      }
+    },
+
+    onStart(g) {
+      g.showTimer = 0.9;
+      g.showStep = 0;
+      g.phase = 'show';
+      g.inputIdx = 0;
+      g.audio.startMusic({ root: 220, bpm: 84, scale: [0, 3, 5, 7, 10], wave: 'sine', gain: 0.032 });
+    },
+
+    update(g, dt) {
+      for (let i = 0; i < 6; i++) g.padGlow[i] = Math.max(0, g.padGlow[i] - dt * 3.6);
+      g.flash = Math.max(0, g.flash - dt * 2.6);
+      for (let i = g.floats.length - 1; i >= 0; i--) {
+        g.floats[i].t += dt;
+        if (g.floats[i].t >= g.floats[i].life) g.floats.splice(i, 1);
+      }
+
+      if (g.phase === 'show') {
+        g.showTimer -= dt;
+        if (g.showTimer <= 0) {
+          if (g.litPad >= 0) {
+            g.litPad = -1;
+            g.showTimer = 0.13;
+          } else if (g.showStep < g.sequence.length) {
+            lightPad(g, g.sequence[g.showStep]);
+            g.showStep++;
+            g.showTimer = 0.35;
+          } else {
+            g.phase = 'input';
+            g.inputIdx = 0;
+            g.inputStart = g.time;
+            g.lastTap = g.time + 0.65;
+            g.perfect = true;
+            g.audio.sfx('blip');
+          }
+        }
+      } else if (g.phase === 'clear') {
+        g.clearT -= dt;
+        if (g.clearT <= 0) {
+          g.round++;
+          g.sequence.push(randInt(0, 5));
+          g.phase = 'show';
+          g.showStep = 0;
+          g.litPad = -1;
+          g.showTimer = 0.62;
+          g.inputIdx = 0;
+          g.failPad = -1;
+        }
+      } else if (g.phase === 'fail') {
+        g.failT -= dt;
+        if (g.failT <= 0) {
+          g.over('Cleared ' + (g.round - 1) + ' rounds · ' + g.perfectRounds + ' perfect');
+        }
+      }
+    },
+
+    draw(g, ctx) {
+      g.clear('#04100c');
+
+      // ambient wash
+      const bg = ctx.createRadialGradient(CX, CY - 30, 30, CX, CY, 620);
+      bg.addColorStop(0, 'rgba(40,110,84,.34)');
+      bg.addColorStop(0.55, 'rgba(9,38,29,.22)');
+      bg.addColorStop(1, 'rgba(2,9,7,0)');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      drawHoneycomb(g, ctx);
+
+      // floating motes
+      for (const m of g.motes) {
+        const y = ((m.y - g.time * m.spd) % (H + 40) + H + 40) % (H + 40) - 20;
+        const x = m.x + Math.sin(g.time * 0.5 + m.ph) * 12;
+        ctx.globalAlpha = 0.16 + 0.1 * Math.sin(g.time + m.ph);
+        ctx.fillStyle = '#6ee7b7';
+        ctx.beginPath(); ctx.arc(x, y, m.r, 0, TAU); ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+
+      drawProgressRing(g, ctx);
+
+      // pads
+      for (let i = 0; i < 6; i++) drawPad(g, ctx, i);
+
+      drawCore(g, ctx);
+      drawPanel(g, ctx);
+      drawFloats(g, ctx);
+
+      if (g.flash > 0) {
+        ctx.fillStyle = 'rgba(255,84,84,' + (g.flash * 0.16) + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      // corner vignette
+      const vg = ctx.createRadialGradient(CX, CY, 200, CX, CY, 570);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(0,0,0,.55)');
+      ctx.fillStyle = vg;
+      ctx.fillRect(0, 0, W, H);
+    },
+
+    onAction(g, action, down) {
+      if (!down || g.phase !== 'input') return;
+      if (action === 'left') { g.focus = (g.focus + 5) % 6; g.audio.sfx('tick'); }
+      else if (action === 'right') { g.focus = (g.focus + 1) % 6; g.audio.sfx('tick'); }
+      else if (action === 'action' || action === 'up' || action === 'down') pressPad(g, g.focus);
+    },
+
+    onPointer(g, x, y, type) {
+      if (type !== 'down' || g.phase !== 'input') return;
+      const i = padAt(g, x, y);
+      if (i >= 0) pressPad(g, i);
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+
+  function pressPad(g, i) {
+    if (g.phase !== 'input' || g.inputIdx >= g.sequence.length) return;
+    g.focus = i;
+    g.padGlow[i] = 1;
+    if (i !== g.sequence[g.inputIdx]) return wrongPad(g, i);
+
+    padTone(g, i, false);
+    g.haptic('tick');
+    if (g.time - g.lastTap > 1.15) g.perfect = false;
+    g.lastTap = g.time;
+    g.inputIdx++;
+    g.burst(PADS[i].x, PADS[i].y, 'hsl(' + HUE[i] + ' 85% 65%)', 9,
+      { speed: 120, life: 0.5, size: 2.6, gravity: 60 });
+
+    if (g.inputIdx >= g.sequence.length) clearRound(g);
+  }
+
+  function clearRound(g) {
+    const base = g.round * 50;
+    const bonus = g.perfect ? g.round * 25 : 0;
+    const total = base + bonus;
+    g.addScore(total);
+    if (g.perfect) g.perfectRounds++;
+    g.phase = 'clear';
+    g.clearT = 1.15;
+    g.focus = 0;
+    g.audio.sfx('win');
+    g.haptic('coin');
+    for (let i = 0; i < 6; i++) g.padGlow[i] = 0.7;
+    g.burst(CX, CY, g.perfect ? '#fcd34d' : '#6ee7b7', g.perfect ? 34 : 20,
+      { speed: 230, life: 0.9, size: 3.4, gravity: 40 });
+    g.floats.push({
+      text: '+' + total,
+      sub: g.perfect ? 'PERFECT ×' + g.round : 'ROUND ' + g.round + ' CLEAR',
+      color: g.perfect ? '#fcd34d' : '#6ee7b7',
+      x: CX, y: CY - 70, t: 0, life: 1.1
+    });
+    if (g.floats.length > 4) g.floats.shift();
+  }
+
+  function wrongPad(g, i) {
+    g.phase = 'fail';
+    g.failT = 0.95;
+    g.failPad = i;
+    g.flash = 1;
+    g.shake(10, 0.45);
+    g.haptic('hit');
+    g.audio.sfx('buzzer');
+    g.burst(PADS[i].x, PADS[i].y, '#ff5f6d', 30, { speed: 250, life: 0.8, size: 3.6 });
+    g.floats.push({
+      text: 'WRONG PAD', sub: 'EXPECTED ' + (g.sequence[g.inputIdx] + 1),
+      color: '#ff7a85', x: CX, y: CY - 60, t: 0, life: 1.0
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+
+  function drawHoneycomb(g, ctx) {
+    const r = 46;
+    const dx = r * 1.5;
+    const dy = Math.sqrt(3) * r;
+    ctx.save();
+    ctx.lineWidth = 1;
+    for (let col = -1; col < 16; col++) {
+      for (let row = -1; row < 10; row++) {
+        const x = col * dx;
+        const y = row * dy + (col % 2 ? dy / 2 : 0);
+        const d = dist(x, y, CX, CY);
+        if (d > 620) continue;
+        const a = 0.028 + 0.03 * Math.max(0, 1 - d / 620);
+        ctx.strokeStyle = 'rgba(110,231,183,' + a.toFixed(3) + ')';
+        hexPath(ctx, x, y, r - 4, 0);
+        ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawProgressRing(g, ctx) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = 'rgba(110,231,183,.09)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(CX, CY, RING_R, 0, TAU);
+    ctx.stroke();
+
+    let p = 0;
+    if (g.phase === 'show') p = g.sequence.length ? g.showStep / g.sequence.length : 0;
+    else if (g.phase === 'input') p = g.inputIdx / g.sequence.length;
+    else if (g.phase === 'clear') p = 1;
+    else if (g.phase === 'fail') p = g.inputIdx / g.sequence.length;
+
+    if (p > 0) {
+      ctx.strokeStyle = g.phase === 'fail' ? '#ff5f6d' : '#6ee7b7';
+      ctx.lineWidth = 5;
+      ctx.shadowColor = g.phase === 'fail' ? '#ff5f6d' : '#6ee7b7';
+      ctx.shadowBlur = 18;
+      ctx.beginPath();
+      ctx.arc(CX, CY, RING_R, -Math.PI / 2, -Math.PI / 2 + TAU * p);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    // pad-aligned ticks
+    for (let i = 0; i < 6; i++) {
+      const a = PADS[i].a;
+      const r1 = RING_R + 10, r2 = RING_R + (g.litPad === i ? 22 : 16);
+      ctx.strokeStyle = g.litPad === i ? 'hsl(' + HUE[i] + ' 85% 70%)' : 'rgba(110,231,183,.16)';
+      ctx.lineWidth = g.litPad === i ? 3 : 1.5;
+      ctx.beginPath();
+      ctx.moveTo(CX + Math.cos(a) * r1, CY + Math.sin(a) * r1);
+      ctx.lineTo(CX + Math.cos(a) * r2, CY + Math.sin(a) * r2);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawPad(g, ctx, i) {
+    const p = PADS[i];
+    const lit = g.litPad === i;
+    const glow = g.padGlow[i];
+    const on = lit || glow > 0.02;
+    const isFail = g.phase === 'fail' && g.failPad === i;
+    const hue = isFail ? 356 : p.hue;
+    const focus = g.phase === 'input' && g.focus === i;
+    const pulse = lit ? 1 + Math.sin(g.time * 22) * 0.025 : 1;
+    const r = PAD_R * pulse;
+
+    ctx.save();
+
+    // focus halo
+    if (focus && !isFail) {
+      ctx.save();
+      ctx.setLineDash([4, 8]);
+      ctx.lineDashOffset = -g.time * 20;
+      ctx.strokeStyle = 'rgba(110,231,183,.55)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, PAD_R + 17, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // press ripple
+    if (glow > 0.02 && !lit) {
+      ctx.globalAlpha = glow * 0.5;
+      ctx.strokeStyle = isFail ? 'rgba(255,95,109,.8)' : 'hsl(' + hue + ' 90% 72%)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, PAD_R * 1.1 + (1 - glow) * 26, 0, TAU);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
+    const grad = ctx.createLinearGradient(p.x - r, p.y - r, p.x + r, p.y + r);
+    if (on) {
+      grad.addColorStop(0, 'hsl(' + hue + ' 88% 71%)');
+      grad.addColorStop(0.55, 'hsl(' + hue + ' 82% 58%)');
+      grad.addColorStop(1, 'hsl(' + hue + ' 76% 42%)');
+    } else {
+      grad.addColorStop(0, 'hsl(' + hue + ' 24% 11%)');
+      grad.addColorStop(1, 'hsl(' + hue + ' 30% 6%)');
+    }
+
+    ctx.shadowColor = on ? 'hsl(' + hue + ' 88% 62%)' : 'rgba(0,0,0,.7)';
+    ctx.shadowBlur = on ? 38 : 16;
+    hexPath(ctx, p.x, p.y, r, 0);
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    hexPath(ctx, p.x, p.y, r, 0);
+    ctx.strokeStyle = on ? 'hsla(' + hue + ',90%,82%,.9)' : 'hsla(' + hue + ',55%,52%,.25)';
+    ctx.lineWidth = on ? 2.4 : 1.4;
+    ctx.stroke();
+
+    // bevel inset
+    hexPath(ctx, p.x, p.y, r * 0.7, 0);
+    ctx.strokeStyle = on ? 'rgba(255,255,255,.22)' : 'rgba(255,255,255,.055)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // core dot
+    if (on) {
+      ctx.globalAlpha = 0.55;
+      ctx.fillStyle = 'rgba(255,255,255,.9)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y - 2, 5, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    } else {
+      ctx.fillStyle = 'hsla(' + hue + ',60%,50%,.4)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 2.5, 0, TAU);
+      ctx.fill();
+    }
+
+    // number label
+    g.text(String(i + 1), p.x, p.y + PAD_R * 0.62, {
+      size: 10, align: 'center', color: on ? 'rgba(3,20,15,.55)' : 'hsla(' + hue + ',50%,60%,.33)',
+      font: MONO, weight: 600
+    });
+
+    if (lit) {
+      ctx.globalAlpha = 0.35 + Math.sin(g.time * 18) * 0.1;
+      hexPath(ctx, p.x, p.y, r * 0.42, 0);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.restore();
+  }
+
+  function drawCore(g, ctx) {
+    const beat = 1 + Math.sin(g.time * 2.2) * 0.035 + (g.phase === 'clear' ? 0.12 : 0);
+    const r = 76 * beat;
+
+    ctx.save();
+    ctx.shadowColor = 'rgba(110,231,183,.55)';
+    ctx.shadowBlur = 42;
+    hexPath(ctx, CX, CY, r, 0);
+    const grad = ctx.createRadialGradient(CX, CY - 18, 4, CX, CY, r);
+    grad.addColorStop(0, 'rgba(190,255,230,.32)');
+    grad.addColorStop(0.55, 'rgba(26,86,66,.85)');
+    grad.addColorStop(1, 'rgba(4,20,15,.96)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    hexPath(ctx, CX, CY, r, 0);
+    ctx.strokeStyle = 'rgba(110,231,183,.4)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    hexPath(ctx, CX, CY, r * 0.78, Math.PI / 6);
+    ctx.strokeStyle = 'rgba(110,231,183,.14)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // rotating arc
+    ctx.strokeStyle = 'rgba(110,231,183,.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(CX, CY, r + 10, g.time * 0.8, g.time * 0.8 + 1.4);
+    ctx.stroke();
+
+    g.text(String(g.sequence.length).padStart(2, '0'), CX, CY + 8, {
+      size: 40, align: 'center', color: '#eafff6', font: MONO, weight: 700,
+      glow: 'rgba(110,231,183,.7)', blur: 22
+    });
+    g.text('STEPS', CX, CY + 30, {
+      size: 8.5, align: 'center', color: 'rgba(110,231,183,.62)', font: MONO
+    });
+
+    // status dot
+    const dotCol = g.phase === 'fail' ? '#ff5f6d' : g.phase === 'input' ? '#fcd34d' : '#6ee7b7';
+    ctx.globalAlpha = 0.5 + Math.sin(g.time * 5) * 0.4;
+    ctx.fillStyle = dotCol;
+    ctx.beginPath(); ctx.arc(CX, CY - r + 14, 3, 0, TAU); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+
+  function drawPanel(g, ctx) {
+    const x = 706, y = 84, w = 228, h = 452;
+
+    g.roundRect(x, y, w, h, 18, 'rgba(6,24,18,.72)', 'rgba(110,231,183,.14)', 1);
+    // top inner light
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    const top = ctx.createLinearGradient(0, y, 0, y + 90);
+    top.addColorStop(0, 'rgba(110,231,183,.08)');
+    top.addColorStop(1, 'rgba(110,231,183,0)');
+    ctx.fillStyle = top;
+    ctx.fillRect(x + 1, y + 1, w - 2, 90);
+    ctx.restore();
+
+    const px = x + 26;
+    g.text('SEQUENCE CORE', px, y + 32, { size: 9, color: 'rgba(110,231,183,.55)', font: MONO, weight: 600 });
+    g.text('ROUND', px, y + 62, { size: 9, color: 'rgba(148,180,168,.7)', font: MONO });
+    g.text(String(g.round).padStart(2, '0'), px, y + 120, {
+      size: 56, color: '#f2fff9', font: MONO, weight: 700, glow: 'rgba(110,231,183,.35)', blur: 18
+    });
+
+    g.line(px, y + 142, x + w - 26, y + 142, 'rgba(110,231,183,.12)', 1);
+
+    g.text('SEQUENCE', px, y + 166, { size: 9, color: 'rgba(148,180,168,.7)', font: MONO });
+    g.text(g.sequence.length + ' STEPS', px, y + 190, { size: 18, color: '#d9fff0', font: MONO, weight: 600 });
+
+    g.text('PROGRESS', px, y + 222, { size: 9, color: 'rgba(148,180,168,.7)', font: MONO });
+    g.roundRect(px, y + 232, w - 52, 7, 3.5, 'rgba(110,231,183,.09)');
+    let p = g.phase === 'input' ? g.inputIdx / g.sequence.length
+      : g.phase === 'show' ? g.showStep / g.sequence.length
+        : g.phase === 'clear' ? 1 : 0;
+    if (p > 0) {
+      g.roundRect(px, y + 232, (w - 52) * p, 7, 3.5, g.phase === 'fail' ? '#ff5f6d' : '#6ee7b7');
+    }
+
+    g.text('PERFECT ROUNDS', px, y + 266, { size: 9, color: 'rgba(148,180,168,.7)', font: MONO });
+    g.text(String(g.perfectRounds), px, y + 292, { size: 18, color: '#fcd34d', font: MONO, weight: 600 });
+
+    // status card
+    const sy = y + 312, sh = 74;
+    g.roundRect(px, sy, w - 52, sh, 12, 'rgba(110,231,183,.045)', 'rgba(110,231,183,.1)', 1);
+    g.text('STATUS', px + 14, sy + 20, { size: 8, color: 'rgba(148,180,168,.6)', font: MONO });
+    let status = 'WATCH', col = '#6ee7b7';
+    if (g.phase === 'input') { status = 'YOUR TURN'; col = '#fcd34d'; }
+    else if (g.phase === 'clear') { status = g.perfect ? 'FLAWLESS' : 'CLEAR'; col = '#fcd34d'; }
+    else if (g.phase === 'fail') { status = 'WRONG PAD'; col = '#ff7a85'; }
+    g.text(status, px + 14, sy + 48, {
+      size: 15, color: col, font: MONO, weight: 600, glow: col, blur: 12
+    });
+
+    g.text('1–6 · CLICK PADS', px, y + 420, { size: 8, color: 'rgba(148,180,168,.45)', font: MONO });
+    g.text('WATCH ◀ ● ▶', px, y + 438, { size: 8, color: 'rgba(148,180,168,.45)', font: MONO });
+  }
+
+  function drawFloats(g, ctx) {
+    for (const f of g.floats) {
+      const k = f.t / f.life;
+      const a = k < 0.75 ? 1 : (1 - (k - 0.75) / 0.25);
+      const yy = f.y - k * 26;
+      g.text(f.text, f.x, yy, {
+        size: 30, align: 'center', color: f.color, font: MONO, weight: 700,
+        alpha: a, glow: f.color, blur: 18
+      });
+      g.text(f.sub, f.x, yy + 20, {
+        size: 9, align: 'center', color: f.color, font: MONO, alpha: a * 0.7
+      });
+    }
+  }
+})();
+</script>
+</body>
+</html>

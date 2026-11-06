@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Neon Serpent · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  const COLS = 28, ROWS = 17, CELL = 30, OX = 60, OY = 42;
+  const W = 960, H = 600;
+
+  function cellCenter(c) {
+    return { x: OX + c.x * CELL + CELL / 2, y: OY + c.y * CELL + CELL / 2 };
+  }
+
+  function spawnFood(g) {
+    const taken = new Set(g.snake.map(s => s.x + ',' + s.y));
+    let tries = 0;
+    while (tries++ < 900) {
+      const c = { x: g.randInt(0, COLS - 1), y: g.randInt(0, ROWS - 1) };
+      if (!taken.has(c.x + ',' + c.y)) return c;
+    }
+    return { x: 14, y: 8 };
+  }
+
+  WristGame.mount({
+    id: 'neon-serpent',
+    title: 'Neon Serpent',
+    tagline: 'Grow. Glow. Do not bite yourself.',
+    category: 'Arcade',
+    accent: '#c9f56b',
+    bg: '#070a08',
+    controls: [
+      { keys: '← → ↑ ↓', label: 'STEER' },
+      { keys: 'WATCH', label: 'LEFT / RIGHT' }
+    ],
+    tips: [
+      'Every fifth core starts a combo multiplier.',
+      'The snake accelerates as it grows. Plan two turns ahead.'
+    ],
+
+    init(g) {
+      g.score = 0;
+      g.snake = [{ x: 9, y: 8 }, { x: 8, y: 8 }, { x: 7, y: 8 }];
+      g.dir = { x: 1, y: 0 };
+      g.queue = [];
+      g.food = spawnFood(g);
+      g.acc = 0;
+      g.step = 0.135;
+      g.combo = 0;
+      g.eaten = 0;
+      g.pop = 0;
+      g.dead = false;
+      g.audio.stopMusic();
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 196, bpm: 104, scale: [0, 3, 5, 7, 10], gain: 0.045 });
+    },
+
+    onAction(g, action, down) {
+      if (!down) return;
+      let d = null;
+      if (action === 'left') d = { x: -1, y: 0 };
+      else if (action === 'right') d = { x: 1, y: 0 };
+      else if (action === 'up') d = { x: 0, y: -1 };
+      else if (action === 'down') d = { x: 0, y: 1 };
+      if (!d) return;
+      const last = g.queue.length ? g.queue[g.queue.length - 1] : g.dir;
+      if (last.x === -d.x && last.y === -d.y) return;
+      if (last.x === d.x && last.y === d.y) return;
+      if (g.queue.length < 2) g.queue.push(d);
+    },
+
+    update(g, dt) {
+      g.acc += dt;
+      while (g.acc >= g.step) {
+        g.acc -= g.step;
+        if (g.queue.length) g.dir = g.queue.shift();
+        const head = g.snake[0];
+        const next = { x: head.x + g.dir.x, y: head.y + g.dir.y };
+
+        if (next.x < 0 || next.x >= COLS || next.y < 0 || next.y >= ROWS) return die(g);
+        if (g.snake.some((s, i) => i < g.snake.length - 1 && s.x === next.x && s.y === next.y)) return die(g);
+
+        g.snake.unshift(next);
+        if (next.x === g.food.x && next.y === g.food.y) {
+          g.eaten++;
+          g.combo++;
+          g.score += 10 + Math.min(g.combo, 10) * 3;
+          g.pop = 1;
+          g.speedUp = true;
+          g.step = Math.max(0.062, 0.135 - g.eaten * 0.0032);
+          const p = cellCenter(next);
+          g.burst(p.x, p.y, g.def.accent, 22, { speed: 240, life: 0.7, size: 4 });
+          g.burst(p.x, p.y, '#ffffff', 8, { speed: 130, life: 0.45, size: 2 });
+          g.haptic(g.combo % 5 === 0 ? 'coin' : 'tick');
+          g.audio.sfx('coin');
+          if (g.combo % 5 === 0) {
+            g.audio.chord([660, 880, 1320], 0.2, 'triangle', 0.07);
+            g.haptic('start');
+          }
+          g.food = spawnFood(g);
+        } else {
+          g.snake.pop();
+          if (g.combo > 0 && g.eaten > 0) g.combo = Math.max(0, g.combo - 0.15);
+        }
+      }
+    },
+
+    draw(g, ctx) {
+      g.clear('#070a08');
+      // ambient glow
+      const bg = ctx.createRadialGradient(480, 280, 40, 480, 300, 620);
+      bg.addColorStop(0, 'rgba(40,80,30,.22)');
+      bg.addColorStop(1, 'rgba(4,6,5,0)');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // playfield
+      g.roundRect(OX - 8, OY - 8, COLS * CELL + 16, ROWS * CELL + 16, 14,
+        'rgba(8,14,10,.82)', 'rgba(201,245,107,.16)', 1);
+      ctx.save();
+      ctx.beginPath();
+      ctx.roundRect(OX - 8, OY - 8, COLS * CELL + 16, ROWS * CELL + 16, 14);
+      ctx.clip();
+      g.grid('rgba(201,245,107,.055)', CELL, OX, OY);
+      // checker tint
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          if ((x + y) % 2 === 0) {
+            ctx.fillStyle = 'rgba(201,245,107,.012)';
+            ctx.fillRect(OX + x * CELL, OY + y * CELL, CELL, CELL);
+          }
+        }
+      }
+      ctx.restore();
+
+      // food
+      if (g.food) {
+        const f = cellCenter(g.food);
+        const pulse = 1 + Math.sin(g.time * 5) * 0.12;
+        g.glow(f.x, f.y, 7 * pulse, '#ff5f6d', 26);
+        g.circle(f.x, f.y, 7 * pulse, '#ff5f6d');
+        g.circle(f.x - 2.5, f.y - 2.5, 2.2, 'rgba(255,255,255,.8)');
+        ctx.strokeStyle = 'rgba(255,95,109,.35)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.arc(f.x, f.y, 13 + Math.sin(g.time * 5) * 2, 0, Math.PI * 2); ctx.stroke();
+      }
+
+      // snake
+      const n = g.snake.length;
+      for (let i = n - 1; i >= 0; i--) {
+        const s = g.snake[i];
+        const c = cellCenter(s);
+        const t = i / Math.max(1, n - 1);
+        const pad = 2.5 + t * 2.2;
+        const hue = 74 - t * 26;
+        const col = `hsl(${hue} 82% ${60 - t * 20}%)`;
+        ctx.save();
+        ctx.shadowColor = i === 0 ? '#c9f56b' : 'rgba(201,245,107,.35)';
+        ctx.shadowBlur = i === 0 ? 20 : 8;
+        g.roundRect(c.x - CELL / 2 + pad, c.y - CELL / 2 + pad, CELL - pad * 2, CELL - pad * 2, 8, col);
+        ctx.restore();
+        if (i === 0) {
+          // eyes
+          const ex = g.dir.x, ey = g.dir.y;
+          const px = -ey, py = ex;
+          const e1 = { x: c.x + ex * 4 + px * 5, y: c.y + ey * 4 + py * 5 };
+          const e2 = { x: c.x + ex * 4 - px * 5, y: c.y + ey * 4 - py * 5 };
+          g.circle(e1.x, e1.y, 3.2, '#07100a');
+          g.circle(e2.x, e2.y, 3.2, '#07100a');
+          g.circle(e1.x + ex * 1.2, e1.y + ey * 1.2, 1.2, '#eaffb0');
+          g.circle(e2.x + ex * 1.2, e2.y + ey * 1.2, 1.2, '#eaffb0');
+        }
+      }
+
+      // HUD row
+      g.text('SCORE', OX, OY + ROWS * CELL + 30, { size: 10, color: '#78806f', font: "'IBM Plex Mono',monospace" });
+      g.text(String(Math.round(g.score)), OX, OY + ROWS * CELL + 58, { size: 26, color: '#f4f1e8', font: "'IBM Plex Mono',monospace" });
+
+      const combo = Math.floor(g.combo);
+      g.text('COMBO', OX + 180, OY + ROWS * CELL + 30, { size: 10, color: '#78806f', font: "'IBM Plex Mono',monospace" });
+      g.text('x' + (1 + Math.min(combo, 10)), OX + 180, OY + ROWS * CELL + 58,
+        { size: 26, color: combo >= 5 ? '#c9f56b' : '#9aa38f', font: "'IBM Plex Mono',monospace" });
+
+      g.text('LENGTH ' + n, OX + 360, OY + ROWS * CELL + 30, { size: 10, color: '#78806f', font: "'IBM Plex Mono',monospace" });
+      g.text(String(n), OX + 360, OY + ROWS * CELL + 58, { size: 26, color: '#9aa38f', font: "'IBM Plex Mono',monospace" });
+
+      g.text('↑ ↓ ← → / WATCH', W - OX, OY + ROWS * CELL + 52,
+        { size: 10, color: '#5c6458', align: 'right', font: "'IBM Plex Mono',monospace" });
+    }
+  });
+
+  function die(g) {
+    if (g.dead) return;
+    g.dead = true;
+    const h = cellCenter(g.snake[0]);
+    g.burst(h.x, h.y, '#ff5f6d', 34, { speed: 260, life: 0.9, size: 4 });
+    g.burst(h.x, h.y, '#c9f56b', 16, { speed: 180, life: 0.7, size: 3 });
+    g.shake(10, 0.5);
+    g.haptic('crash');
+    g.audio.sfx('hit');
+    g.over('Length ' + g.snake.length + ' · Best ' + Math.max(g.best, g.score));
+  }
+})();
+</script>
+</body>
+</html>

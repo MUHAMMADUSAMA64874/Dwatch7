@@ -1,0 +1,956 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Orbit Sling · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const W = 960, H = 600;
+  const MONO = "'IBM Plex Mono',monospace";
+  const GRAV = 2.15e6;
+  const DT = 1 / 120;
+  const MAX_SHOT = 9;
+  const PROBE_R = 6;
+  const MAX_SPEED = 760;
+  const PLANET_HUES = [199, 262, 330];
+  const LEVELS = 5;
+
+  const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+  const rand = (a = 0, b = 1) => a + Math.random() * (b - a);
+  const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+
+  /* ------------------------------------------------------------------ */
+  /*  PHYSICS                                                            */
+  /* ------------------------------------------------------------------ */
+  function accel(x, y, planets, out) {
+    let ax = 0, ay = 0;
+    for (let i = 0; i < planets.length; i++) {
+      const p = planets[i];
+      const dx = p.x - x, dy = p.y - y;
+      const d2 = dx * dx + dy * dy + 1400;
+      const d = Math.sqrt(d2);
+      const a = GRAV * p.mass / d2;
+      ax += a * dx / d;
+      ay += a * dy / d;
+    }
+    out.x = ax; out.y = ay;
+    return out;
+  }
+
+  const ACC = { x: 0, y: 0 };
+
+  function simulate(sx, sy, vx, vy, planets, beacon, maxT, step, collect) {
+    let x = sx, y = sy;
+    const path = collect ? [{ x, y }] : null;
+    const hitR = beacon.r + 10;
+    for (let t = 0; t < maxT; t += step) {
+      if (dist(x, y, beacon.x, beacon.y) <= hitR) {
+        return { hit: true, time: t, path, x, y };
+      }
+      accel(x, y, planets, ACC);
+      vx += ACC.x * step;
+      vy += ACC.y * step;
+      x += vx * step;
+      y += vy * step;
+      if (collect) path.push({ x, y });
+      if (x < -40 || x > W + 40 || y < -40 || y > H + 40) {
+        return { out: true, time: t, path, x, y };
+      }
+      for (let i = 0; i < planets.length; i++) {
+        const p = planets[i];
+        if (dist(x, y, p.x, p.y) < p.r + PROBE_R) {
+          return { crash: true, time: t, path, x, y };
+        }
+      }
+      if (dist(x, y, beacon.x, beacon.y) <= hitR) {
+        return { hit: true, time: t + step, path, x, y };
+      }
+    }
+    return { timeout: true, time: maxT, path, x, y };
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  PROCEDURAL, VERIFIED-REACHABLE LEVELS                              */
+  /* ------------------------------------------------------------------ */
+  function makePlanet(x, y, r, i, index) {
+    return {
+      x, y, r,
+      mass: (0.72 + r / 62) * (0.82 + index * 0.08),
+      hue: PLANET_HUES[i % PLANET_HUES.length] + rand(-10, 10),
+      tilt: rand(-0.75, 0.75),
+      spin: rand(0.25, 1) * (Math.random() < 0.5 ? -1 : 1),
+      phase: rand(0, 6.28)
+    };
+  }
+
+  function findSolution(start, beacon, planets) {
+    const base = Math.atan2(beacon.y - start.y, beacon.x - start.x);
+    const hits = [];
+    for (let i = 0; i < 380; i++) {
+      let a, speed;
+      if (i < 280) {
+        a = base + rand(-1.12, 1.12);
+        speed = rand(290, 750);
+      } else {
+        a = rand(0, Math.PI * 2);
+        speed = rand(300, 750);
+      }
+      const vx = Math.cos(a) * speed, vy = Math.sin(a) * speed;
+      const res = simulate(start.x, start.y, vx, vy, planets, beacon, 7, DT, false);
+      if (res.hit && res.time > 0.85) {
+        hits.push({ vx, vy, time: res.time });
+        if (hits.length >= 26) break;
+      }
+    }
+    if (!hits.length) return null;
+    let best = hits[0];
+    let bestD = Infinity;
+    for (const h of hits) {
+      // prefer a satisfying ~2.2s gravity arc, never an instant line-drive
+      const d = Math.abs(h.time - 2.2);
+      if (d < bestD) { bestD = d; best = h; }
+    }
+    // replay once with the path recorded for the post-failure ghost hint
+    const verify = simulate(start.x, start.y, best.vx, best.vy, planets, beacon, 7, DT, true);
+    if (!verify.hit) return null;
+    return { vx: best.vx, vy: best.vy, time: best.time, path: verify.path };
+  }
+
+  function generateLevel(index) {
+    const planetCount = index < 2 ? 2 : 3;
+    for (let layout = 0; layout < 10; layout++) {
+      const start = { x: rand(112, 172), y: rand(175, 425) };
+      const beacon = {
+        x: rand(800, 838),
+        y: rand(100, 500),
+        r: 26 - (index >= 3 ? 2 : 0)
+      };
+      if (dist(start.x, start.y, beacon.x, beacon.y) < 540) continue;
+
+      const planets = [];
+      let guard = 0;
+      while (planets.length < planetCount && guard++ < 120) {
+        const r = rand(28, 44) + index * 2;
+        const x = rand(250, 715);
+        const y = rand(92, 508);
+        if (dist(x, y, start.x, start.y) < 150 + r) continue;
+        if (dist(x, y, beacon.x, beacon.y) < 150 + r) continue;
+        let bad = false;
+        for (const q of planets) {
+          if (dist(x, y, q.x, q.y) < 130 + r + q.r) { bad = true; break; }
+        }
+        if (bad) continue;
+        planets.push(makePlanet(x, y, r, planets.length, index));
+      }
+      if (planets.length < planetCount) continue;
+
+      const sol = findSolution(start, beacon, planets);
+      if (sol) return { start, beacon, planets, solution: sol, index };
+    }
+    return fallbackLevel(index);
+  }
+
+  function fallbackLevel(index) {
+    const start = { x: 150, y: 300 };
+    const beacon = { x: 818, y: 300, r: 26 };
+    const planets = [
+      makePlanet(484, 108, 34, 0, index),
+      makePlanet(484, 492, 34, 1, index)
+    ];
+    const speed = 330 + index * 22;
+    const verify = simulate(start.x, start.y, speed, 0, planets, beacon, 7, DT, true);
+    return {
+      start, beacon, planets, index,
+      solution: { vx: speed, vy: 0, time: verify.time || 2.1, path: verify.path || [] }
+    };
+  }
+
+  function defaultAim(g) {
+    const d = g.data;
+    const a = Math.atan2(d.beacon.y - d.start.y, d.beacon.x - d.start.x);
+    const speed = 430 + g.level * 18;
+    return { vx: Math.cos(a) * speed, vy: Math.sin(a) * speed };
+  }
+
+  function loadLevel(g, index) {
+    let data = g.levelCache[index];
+    if (!data) {
+      data = generateLevel(index);
+      g.levelCache[index] = data;
+    }
+    g.data = data;
+    g.level = index;
+    g.phase = 'aim';
+    g.probe = { x: data.start.x, y: data.start.y, vx: 0, vy: 0 };
+    g.aim = defaultAim(g);
+    g.trail = [];
+    g.prediction = null;
+    g.simT = 0;
+    g.acc = 0;
+    g.dragging = false;
+    g.dragMoved = false;
+    g.hint = g.hints[index] ? data.solution.path : null;
+    g.successT = 0;
+    g.failT = 0;
+    g.failFlash = 0;
+    g.lastGain = 0;
+    g.msg = '';
+  }
+
+  function resetAttempt(g) {
+    const d = g.data;
+    g.probe = { x: d.start.x, y: d.start.y, vx: 0, vy: 0 };
+    g.aim = defaultAim(g);
+    g.trail = [];
+    g.prediction = null;
+    g.phase = 'aim';
+    g.simT = 0;
+    g.acc = 0;
+    g.dragging = false;
+    g.dragMoved = false;
+    g.hint = g.hints[g.level] ? d.solution.path : null;
+    g.failFlash = 0;
+  }
+
+  function launch(g) {
+    if (g.phase !== 'aim') return;
+    const sp = Math.hypot(g.aim.vx, g.aim.vy);
+    if (sp < 90) return;
+    g.probe.vx = g.aim.vx;
+    g.probe.vy = g.aim.vy;
+    g.trail = [{ x: g.probe.x, y: g.probe.y }];
+    g.phase = 'fly';
+    g.simT = 0;
+    g.acc = 0;
+    g.dragging = false;
+    g.dragMoved = false;
+    g.prediction = null;
+    g.hint = null;
+    g.audio.sfx('whoosh');
+    g.audio.tone(170, 0.32, 'sine', 0.09, { slide: 440 });
+    g.haptic('nitro');
+    g.shake(3, 0.18);
+    g.burst(g.probe.x, g.probe.y, '#7dd3fc', 16, { speed: 160, life: 0.6, size: 2.6 });
+  }
+
+  function success(g) {
+    if (g.phase !== 'fly') return;
+    g.phase = 'success';
+    g.successT = 1.7;
+    g.hint = null;
+    const base = 500 + g.level * 150;
+    const timeBonus = Math.max(0, Math.round((MAX_SHOT - g.simT) * 55));
+    g.lastGain = base + timeBonus;
+    g.addScore(g.lastGain);
+    g.audio.sfx('power');
+    g.audio.chord([523, 784, 1046], 0.35, 'triangle', 0.075);
+    g.haptic('coin');
+    g.shake(6, 0.35);
+    const b = g.data.beacon;
+    g.shock.push({ x: b.x, y: b.y, r: b.r, life: 1, max: 1 });
+    g.burst(b.x, b.y, '#7dd3fc', 38, { speed: 280, life: 1, size: 3.5 });
+    g.burst(b.x, b.y, '#f0f9ff', 16, { speed: 180, life: 0.7, size: 2 });
+  }
+
+  function fail(g, reason) {
+    if (g.phase !== 'fly') return;
+    g.phase = 'fail';
+    g.failT = 1.4;
+    g.failReason = reason;
+    g.retries--;
+    g.failFlash = 1;
+    g.hints[g.level] = true;
+    g.hint = g.data.solution.path;
+    g.audio.sfx('hit');
+    g.haptic('crash');
+    g.shake(9, 0.45);
+    const px = clamp(g.probe.x, 20, W - 20);
+    const py = clamp(g.probe.y, 20, H - 20);
+    g.burst(px, py, '#fb7185', 28, { speed: 230, life: 0.9, size: 3.5 });
+    g.burst(px, py, '#fecdd3', 10, { speed: 130, life: 0.5, size: 2 });
+    if (g.retries <= 0) g.audio.sfx('buzzer');
+  }
+
+  function stepFlight(g) {
+    const p = g.probe, d = g.data, b = d.beacon;
+    if (dist(p.x, p.y, b.x, b.y) <= b.r + 10) { success(g); return; }
+    accel(p.x, p.y, d.planets, ACC);
+    p.vx += ACC.x * DT;
+    p.vy += ACC.y * DT;
+    p.x += p.vx * DT;
+    p.y += p.vy * DT;
+    g.simT += DT;
+
+    if (g.trail.length) {
+      const last = g.trail[g.trail.length - 1];
+      if (dist(last.x, last.y, p.x, p.y) > 3.5) {
+        g.trail.push({ x: p.x, y: p.y });
+        if (g.trail.length > 260) g.trail.shift();
+      }
+    }
+
+    if (p.x < -40 || p.x > W + 40 || p.y < -40 || p.y > H + 40) {
+      fail(g, 'OUT OF RANGE');
+      return;
+    }
+    for (const q of d.planets) {
+      if (dist(p.x, p.y, q.x, q.y) < q.r + PROBE_R) {
+        fail(g, 'SURFACE IMPACT');
+        return;
+      }
+    }
+    if (g.simT > MAX_SHOT) { fail(g, 'SIGNAL LOST'); return; }
+    if (dist(p.x, p.y, b.x, b.y) <= b.r + 10) { success(g); return; }
+  }
+
+  function rotateAim(g, delta) {
+    const sp = Math.hypot(g.aim.vx, g.aim.vy) || 430;
+    const a = Math.atan2(g.aim.vy, g.aim.vx) + delta;
+    g.aim.vx = Math.cos(a) * sp;
+    g.aim.vy = Math.sin(a) * sp;
+  }
+
+  function scaleAim(g, f) {
+    const sp = clamp(Math.hypot(g.aim.vx, g.aim.vy) * f, 150, MAX_SPEED);
+    const a = Math.atan2(g.aim.vy, g.aim.vx);
+    g.aim.vx = Math.cos(a) * sp;
+    g.aim.vy = Math.sin(a) * sp;
+  }
+
+  function aimFromPointer(g) {
+    const p = g.probe;
+    const dx = p.x - g.pointer.x;
+    const dy = p.y - g.pointer.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 6) return;
+    const speed = clamp(len * 2.55, 150, MAX_SPEED);
+    g.aim.vx = dx / len * speed;
+    g.aim.vy = dy / len * speed;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  MOUNT                                                              */
+  /* ------------------------------------------------------------------ */
+  WristGame.mount({
+    id: 'orbit-sling',
+    title: 'Orbit Sling',
+    tagline: 'Gravity is your friend. Mostly.',
+    category: 'Puzzle',
+    accent: '#38bdf8',
+    bg: '#030a12',
+    controls: [
+      { keys: 'DRAG', label: 'AIM' },
+      { keys: 'SPACE / CLICK', label: 'LAUNCH' },
+      { keys: '← →', label: 'STEER ARC' },
+      { keys: 'WATCH', label: 'STEER / ACTION' }
+    ],
+    tips: [
+      'Drag back from the probe like a slingshot, then release to fly.',
+      'Dotted arcs preview the next 2.6 seconds — planets bend them live.',
+      'One probe per attempt. Crash, drift or time out and you burn a retry.',
+      'Three retries for all five orbits. After a miss, the solution arc appears as a ghost.'
+    ],
+
+    init(g) {
+      g.score = 0;
+      g.ended = false;
+      g.phase = 'aim';
+      g.level = 0;
+      g.retries = 3;
+      g.levelCache = [];
+      g.hints = {};
+      g.data = null;
+      g.probe = { x: 0, y: 0, vx: 0, vy: 0 };
+      g.aim = { vx: 0, vy: 0 };
+      g.trail = [];
+      g.prediction = null;
+      g.simT = 0;
+      g.acc = 0;
+      g.dragging = false;
+      g.dragStart = { x: 0, y: 0 };
+      g.dragMoved = false;
+      g.hint = null;
+      g.shock = [];
+      g.successT = 0;
+      g.failT = 0;
+      g.failFlash = 0;
+      g.victoryT = 0;
+      g.lastGain = 0;
+      g.failReason = '';
+      g.audio.stopMusic();
+      loadLevel(g, 0);
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 146, bpm: 82, scale: [0, 2, 3, 7, 10], wave: 'sine', gain: 0.045 });
+    },
+
+    onAction(g, action, down) {
+      if (down && action === 'action') launch(g);
+    },
+
+    onPointer(g, x, y, type) {
+      if (type === 'down') {
+        if (g.phase !== 'aim') return;
+        g.dragging = true;
+        g.dragStart.x = x;
+        g.dragStart.y = y;
+        g.dragMoved = false;
+      } else if (type === 'up') {
+        if (g.phase !== 'aim' || !g.dragging) return;
+        g.dragging = false;
+        launch(g);
+      }
+    },
+
+    update(g, dt) {
+      // shockwaves
+      for (let i = g.shock.length - 1; i >= 0; i--) {
+        const s = g.shock[i];
+        s.life -= dt;
+        s.r += dt * 150;
+        if (s.life <= 0) g.shock.splice(i, 1);
+      }
+      if (g.failFlash > 0) g.failFlash = Math.max(0, g.failFlash - dt * 1.6);
+
+      if (g.phase === 'aim') {
+        if (g.pressed('left')) rotateAim(g, -1.35 * dt);
+        if (g.pressed('right')) rotateAim(g, 1.35 * dt);
+        if (g.pressed('up')) scaleAim(g, 1 + 1.1 * dt);
+        if (g.pressed('down')) scaleAim(g, 1 - 1.1 * dt);
+
+        if (g.dragging && g.pointer.down) {
+          const moved = dist(g.dragStart.x, g.dragStart.y, g.pointer.x, g.pointer.y);
+          if (moved > 10) {
+            g.dragMoved = true;
+            aimFromPointer(g);
+          }
+        }
+
+        const p = g.probe;
+        g.prediction = simulate(p.x, p.y, g.aim.vx, g.aim.vy,
+          g.data.planets, g.data.beacon, 2.6, DT, true);
+      } else if (g.phase === 'fly') {
+        g.acc += dt;
+        let guard = 0;
+        while (g.acc >= DT && g.phase === 'fly' && guard++ < 14) {
+          g.acc -= DT;
+          stepFlight(g);
+        }
+      } else if (g.phase === 'success') {
+        g.successT -= dt;
+        if (g.successT <= 0) {
+          if (g.level >= LEVELS - 1) {
+            g.phase = 'victory';
+            g.victoryT = 2.2;
+            g.audio.stopMusic();
+            g.audio.sfx('win');
+            g.haptic('start');
+          } else {
+            loadLevel(g, g.level + 1);
+          }
+        }
+      } else if (g.phase === 'fail') {
+        g.failT -= dt;
+        if (g.failT <= 0) {
+          if (g.retries <= 0) {
+            if (!g.ended) {
+              g.ended = true;
+              g.over('Signal lost on orbit ' + (g.level + 1) + ' · ' + (g.level) + ' cleared');
+            }
+          } else {
+            resetAttempt(g);
+          }
+        }
+      } else if (g.phase === 'victory') {
+        g.victoryT -= dt;
+        if (g.victoryT <= 0 && !g.ended) {
+          g.ended = true;
+          g.over('All five orbits cleared · gravity tamed');
+        }
+      }
+    },
+
+    draw(g, ctx) {
+      drawSpace(g, ctx);
+      drawGhost(g, ctx);
+      for (const p of g.data.planets) drawPlanet(g, ctx, p);
+      drawBeacon(g, ctx);
+      drawStartPad(g, ctx);
+      if (g.phase === 'aim') drawPrediction(g, ctx);
+      drawTrail(g, ctx);
+      drawProbe(g, ctx);
+      drawAim(g, ctx);
+      drawShock(g, ctx);
+      drawHud(g, ctx);
+      if (g.phase === 'success') drawSuccess(g, ctx);
+      if (g.phase === 'fail') drawFail(g, ctx);
+      if (g.phase === 'victory') drawVictory(g, ctx);
+      drawVignette(g, ctx);
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  DRAWING                                                            */
+  /* ------------------------------------------------------------------ */
+  function drawSpace(g, ctx) {
+    g.clear('#030a12');
+    const n1 = ctx.createRadialGradient(690, 130, 20, 690, 150, 540);
+    n1.addColorStop(0, 'rgba(14,116,144,.24)');
+    n1.addColorStop(0.55, 'rgba(8,47,73,.12)');
+    n1.addColorStop(1, 'rgba(3,10,18,0)');
+    ctx.fillStyle = n1;
+    ctx.fillRect(0, 0, W, H);
+
+    const n2 = ctx.createRadialGradient(230, 500, 10, 240, 480, 460);
+    n2.addColorStop(0, 'rgba(76,29,149,.2)');
+    n2.addColorStop(1, 'rgba(3,10,18,0)');
+    ctx.fillStyle = n2;
+    ctx.fillRect(0, 0, W, H);
+
+    g.stars(160, g.time, 3);
+
+    // distant orbital arcs
+    ctx.save();
+    ctx.strokeStyle = 'rgba(56,189,248,.055)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 12]);
+    ctx.beginPath();
+    ctx.ellipse(500, 320, 430, 245, -0.16, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.ellipse(500, 320, 320, 175, 0.2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawPlanet(g, ctx, p) {
+    const h = p.hue;
+    // gravity well
+    const well = ctx.createRadialGradient(p.x, p.y, p.r * 0.9, p.x, p.y, p.r * 4.6);
+    well.addColorStop(0, 'hsla(' + h + ',90%,60%,.15)');
+    well.addColorStop(0.5, 'hsla(' + h + ',90%,60%,.05)');
+    well.addColorStop(1, 'hsla(' + h + ',90%,60%,0)');
+    ctx.fillStyle = well;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r * 4.6, 0, Math.PI * 2); ctx.fill();
+
+    // orbit rings
+    ctx.save();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.tilt + g.time * 0.04 * p.spin);
+    for (let k = 0; k < 2; k++) {
+      ctx.strokeStyle = 'hsla(' + h + ',85%,70%,' + (0.16 - k * 0.05) + ')';
+      ctx.lineWidth = 1;
+      ctx.setLineDash(k === 0 ? [3, 9] : []);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, p.r * (1.65 + k * 0.42), p.r * (0.52 + k * 0.15), 0, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // gravity field rings
+    ctx.save();
+    ctx.strokeStyle = 'hsla(' + h + ',85%,70%,.11)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 11]);
+    for (let k = 1; k <= 2; k++) {
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.r + p.r * 0.8 * k, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // sphere
+    const grad = ctx.createRadialGradient(
+      p.x - p.r * 0.34, p.y - p.r * 0.38, p.r * 0.08,
+      p.x, p.y, p.r
+    );
+    grad.addColorStop(0, 'hsl(' + h + ' 92% 84%)');
+    grad.addColorStop(0.42, 'hsl(' + h + ' 82% 62%)');
+    grad.addColorStop(0.78, 'hsl(' + h + ' 72% 31%)');
+    grad.addColorStop(1, 'hsl(' + h + ' 74% 12%)');
+    ctx.save();
+    ctx.shadowColor = 'hsla(' + h + ',90%,65%,.55)';
+    ctx.shadowBlur = 26;
+    ctx.fillStyle = grad;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    // bands
+    ctx.save();
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r - 0.5, 0, Math.PI * 2); ctx.clip();
+    ctx.translate(p.x, p.y);
+    ctx.rotate(p.tilt * 0.6 + g.time * 0.06 * p.spin);
+    ctx.fillStyle = 'hsla(' + h + ',90%,78%,.09)';
+    for (let k = -2; k <= 2; k++) {
+      ctx.beginPath();
+      ctx.ellipse(0, k * p.r * 0.3, p.r, p.r * 0.08, 0, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // rim
+    ctx.strokeStyle = 'hsla(' + h + ',92%,78%,.5)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2); ctx.stroke();
+
+    // highlight
+    ctx.fillStyle = 'rgba(255,255,255,.35)';
+    ctx.beginPath();
+    ctx.arc(p.x - p.r * 0.38, p.y - p.r * 0.4, p.r * 0.11, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawBeacon(g, ctx) {
+    const b = g.data.beacon;
+    const pulse = (g.time * 0.5) % 1;
+    for (let k = 0; k < 3; k++) {
+      const ph = (pulse + k / 3) % 1;
+      const r = b.r + ph * 58;
+      ctx.strokeStyle = 'rgba(56,189,248,' + ((1 - ph) * 0.35) + ')';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(b.x, b.y, r, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    // crosshair
+    ctx.save();
+    ctx.strokeStyle = 'rgba(125,211,252,.35)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 7]);
+    ctx.beginPath();
+    ctx.moveTo(b.x - b.r - 26, b.y); ctx.lineTo(b.x - b.r - 8, b.y);
+    ctx.moveTo(b.x + b.r + 8, b.y); ctx.lineTo(b.x + b.r + 26, b.y);
+    ctx.moveTo(b.x, b.y - b.r - 26); ctx.lineTo(b.x, b.y - b.r - 8);
+    ctx.moveTo(b.x, b.y + b.r + 8); ctx.lineTo(b.x, b.y + b.r + 26);
+    ctx.stroke();
+    ctx.restore();
+
+    // beacon core
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.rotate(g.time * 0.7);
+    ctx.shadowColor = '#38bdf8';
+    ctx.shadowBlur = 26;
+    ctx.fillStyle = 'rgba(56,189,248,.18)';
+    ctx.beginPath();
+    ctx.arc(0, 0, b.r * 0.94, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(224,242,254,.85)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let k = 0; k < 4; k++) {
+      const a = k * Math.PI / 2 + Math.PI / 4;
+      const r = k % 2 === 0 ? b.r * 0.72 : b.r * 0.5;
+      const x = Math.cos(a) * r, y = Math.sin(a) * r;
+      if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillStyle = '#e0f2fe';
+    ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+
+    g.text('BEACON', b.x, b.y + b.r + 36, {
+      size: 8, align: 'center', font: MONO, color: 'rgba(125,211,252,.65)'
+    });
+  }
+
+  function drawStartPad(g, ctx) {
+    const s = g.data.start;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(125,211,252,.22)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 7]);
+    ctx.beginPath(); ctx.arc(s.x, s.y, 19, 0, Math.PI * 2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.strokeStyle = 'rgba(125,211,252,.12)';
+    ctx.beginPath(); ctx.arc(s.x, s.y, 28, 0, Math.PI * 2); ctx.stroke();
+    ctx.restore();
+    if (g.phase === 'aim') {
+      const a = 0.4 + 0.2 * Math.sin(g.time * 3);
+      g.text('LAUNCH', s.x, s.y + 40, { size: 8, align: 'center', font: MONO, color: 'rgba(125,211,252,' + a + ')' });
+    }
+  }
+
+  function drawGhost(g, ctx) {
+    if (!g.hint || g.hint.length < 2) return;
+    if (g.phase !== 'aim' && g.phase !== 'fail') return;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(56,189,248,.17)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([2, 8]);
+    ctx.beginPath();
+    const step = Math.max(1, Math.floor(g.hint.length / 150));
+    ctx.moveTo(g.hint[0].x, g.hint[0].y);
+    for (let i = step; i < g.hint.length; i += step) {
+      ctx.lineTo(g.hint[i].x, g.hint[i].y);
+    }
+    ctx.stroke();
+    ctx.restore();
+    const last = g.hint[g.hint.length - 1];
+    ctx.strokeStyle = 'rgba(56,189,248,.3)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(last.x, last.y, 10, 0, Math.PI * 2); ctx.stroke();
+  }
+
+  function drawPrediction(g, ctx) {
+    const res = g.prediction;
+    if (!res || !res.path) return;
+    const path = res.path;
+    if (path.length < 2) return;
+    const step = Math.max(2, Math.floor(path.length / 70));
+    for (let i = 2; i < path.length; i += step) {
+      const t = i / path.length;
+      const alpha = 0.5 * (1 - t * 0.7);
+      const r = 2.4 - t * 1.2;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#7dd3fc';
+      ctx.beginPath(); ctx.arc(path[i].x, path[i].y, Math.max(0.8, r), 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    const end = path[path.length - 1];
+    if (res.hit) {
+      ctx.save();
+      ctx.strokeStyle = 'rgba(110,231,183,.8)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(end.x, end.y, 8, 0, Math.PI * 2); ctx.stroke();
+      ctx.restore();
+    } else if (res.crash || res.out) {
+      ctx.strokeStyle = 'rgba(251,113,133,.8)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(end.x - 5, end.y - 5); ctx.lineTo(end.x + 5, end.y + 5);
+      ctx.moveTo(end.x + 5, end.y - 5); ctx.lineTo(end.x - 5, end.y + 5);
+      ctx.stroke();
+    }
+  }
+
+  function drawTrail(g, ctx) {
+    if (g.trail.length < 2) return;
+    const first = g.trail[0];
+    const last = g.trail[g.trail.length - 1];
+    const grad = ctx.createLinearGradient(first.x, first.y, last.x, last.y);
+    grad.addColorStop(0, 'rgba(56,189,248,0)');
+    grad.addColorStop(0.55, 'rgba(56,189,248,.35)');
+    grad.addColorStop(1, 'rgba(186,230,253,.95)');
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = '#38bdf8';
+    ctx.shadowBlur = 12;
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(first.x, first.y);
+    for (let i = 1; i < g.trail.length; i++) ctx.lineTo(g.trail[i].x, g.trail[i].y);
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(224,242,254,.4)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawProbe(g, ctx) {
+    const p = g.probe;
+    const sp = Math.hypot(p.vx, p.vy);
+    g.glow(p.x, p.y, 9, 'rgba(56,189,248,.65)', 26);
+    g.circle(p.x, p.y, 6.2, '#e0f2fe');
+    g.circle(p.x, p.y, 3, '#ffffff');
+    if (sp > 1) {
+      const a = Math.atan2(p.vy, p.vx);
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(a);
+      ctx.fillStyle = 'rgba(56,189,248,.45)';
+      ctx.beginPath();
+      ctx.moveTo(-6, -3.5); ctx.lineTo(-15, 0); ctx.lineTo(-6, 3.5);
+      ctx.closePath(); ctx.fill();
+      ctx.restore();
+    }
+    if (g.phase === 'aim') {
+      const pulse = 0.55 + 0.3 * Math.sin(g.time * 4.5);
+      ctx.strokeStyle = 'rgba(125,211,252,' + pulse + ')';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 15, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  function drawAim(g, ctx) {
+    if (g.phase !== 'aim') return;
+    const p = g.probe;
+    const sp = Math.hypot(g.aim.vx, g.aim.vy);
+    if (sp < 2) return;
+    const a = Math.atan2(g.aim.vy, g.aim.vx);
+    const len = 34 + sp * 0.17;
+    const ex = p.x + Math.cos(a) * len;
+    const ey = p.y + Math.sin(a) * len;
+
+    // gauge
+    ctx.strokeStyle = 'rgba(56,189,248,.16)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(p.x, p.y, 21, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 21, -Math.PI / 2, -Math.PI / 2 + (clamp(sp / MAX_SPEED, 0, 1)) * Math.PI * 2);
+    ctx.stroke();
+
+    // launch arrow
+    ctx.save();
+    ctx.strokeStyle = 'rgba(186,230,253,.9)';
+    ctx.fillStyle = 'rgba(186,230,253,.9)';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = '#38bdf8';
+    ctx.shadowBlur = 12;
+    ctx.beginPath(); ctx.moveTo(p.x + Math.cos(a) * 25, p.y + Math.sin(a) * 25); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.translate(ex, ey);
+    ctx.rotate(a);
+    ctx.beginPath();
+    ctx.moveTo(10, 0); ctx.lineTo(-4, -6); ctx.lineTo(-1, 0); ctx.lineTo(-4, 6);
+    ctx.closePath(); ctx.fill();
+    ctx.restore();
+
+    // slingshot band
+    if (g.dragging && g.dragMoved) {
+      const px = g.pointer.x, py = g.pointer.y;
+      ctx.save();
+      ctx.strokeStyle = 'rgba(251,191,36,.45)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([5, 6]);
+      ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(px, py); ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = 'rgba(251,191,36,.7)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2); ctx.stroke();
+      g.circle(px, py, 3, 'rgba(251,191,36,.8)');
+    }
+  }
+
+  function drawShock(g, ctx) {
+    for (const s of g.shock) {
+      const a = clamp(s.life / s.max, 0, 1);
+      ctx.strokeStyle = 'rgba(125,211,252,' + (a * 0.7) + ')';
+      ctx.lineWidth = 2 + a * 2;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
+      ctx.strokeStyle = 'rgba(224,242,254,' + (a * 0.4) + ')';
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r * 0.82, 0, Math.PI * 2); ctx.stroke();
+    }
+  }
+
+  function drawHud(g, ctx) {
+    // level
+    g.text('ORBIT ' + String(g.level + 1).padStart(2, '0') + ' / 05', 48, 38,
+      { size: 12, font: MONO, color: '#7dd3fc' });
+    for (let i = 0; i < LEVELS; i++) {
+      g.roundRect(48 + i * 18, 48, 12, 4, 2, i <= g.level ? '#38bdf8' : 'rgba(56,189,248,.17)');
+    }
+    g.text(g.data.planets.length + ' GRAVITY BODIES', 48, 76,
+      { size: 8.5, font: MONO, color: '#4d728a' });
+
+    // signal bar
+    let ratio = 1;
+    if (g.phase === 'fly') ratio = clamp(1 - g.simT / MAX_SHOT, 0, 1);
+    else if (g.phase === 'fail' || g.phase === 'success') ratio = clamp(1 - g.simT / MAX_SHOT, 0, 1);
+    g.text('SIGNAL', 480, 28, { size: 8.5, align: 'center', font: MONO, color: '#5b8399' });
+    g.roundRect(360, 38, 240, 5, 2.5, 'rgba(56,189,248,.12)');
+    if (ratio > 0) {
+      g.roundRect(360, 38, 240 * ratio, 5, 2.5, ratio < 0.28 ? '#fb7185' : '#38bdf8');
+    }
+    g.text((g.simT > 0 ? (MAX_SHOT - g.simT).toFixed(1) : MAX_SHOT.toFixed(1)) + 's', 616, 45,
+      { size: 9, font: MONO, color: ratio < 0.28 ? '#fb7185' : '#6b96ad' });
+
+    // retries
+    g.text('RETRIES', 912, 38, { size: 8.5, align: 'right', font: MONO, color: '#5b8399' });
+    for (let i = 0; i < 3; i++) {
+      const x = 912 - (2 - i) * 20 - 7;
+      const alive = i < g.retries;
+      ctx.strokeStyle = alive ? 'rgba(56,189,248,.75)' : 'rgba(56,189,248,.16)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.arc(x, 52, 6, 0, Math.PI * 2); ctx.stroke();
+      if (alive) g.circle(x, 52, 2.4, '#7dd3fc');
+    }
+
+    // thrust telemetry
+    if (g.phase === 'aim') {
+      const s = Math.hypot(g.aim.vx, g.aim.vy);
+      const pct = Math.round(clamp(s / MAX_SPEED, 0, 1) * 100);
+      g.text('THRUST', 48, 526, { size: 8.5, font: MONO, color: '#5b8399' });
+      g.text(String(pct).padStart(3, ' ') + '%', 48, 548, { size: 18, font: MONO, color: '#bae6fd' });
+      g.roundRect(48, 556, 150, 4, 2, 'rgba(56,189,248,.14)');
+      g.roundRect(48, 556, 150 * pct / 100, 4, 2, '#38bdf8');
+    }
+
+    // hint
+    let hint = 'DRAG BACK FROM THE PROBE · RELEASE TO LAUNCH';
+    if (g.phase === 'fly') hint = 'GRAVITY LOCKED · LET THE PLANETS BEND THE ARC';
+    else if (g.phase === 'success') hint = 'BEACON ACQUIRED';
+    else if (g.phase === 'fail') hint = 'SHOT LOST · RESETTING';
+    else if (g.dragging && g.dragMoved) hint = 'RELEASE TO LAUNCH';
+    else if (g.phase === 'victory') hint = 'ALL ORBITS CLEAR';
+    g.text(hint, 480, 574, { size: 10, align: 'center', font: MONO, color: '#6b96ad' });
+    g.text('← → STEER  ·  ↑ ↓ THRUST  ·  SPACE LAUNCH  ·  WATCH LEFT / RIGHT / ACTION', 480, 592,
+      { size: 8.5, align: 'center', font: MONO, color: 'rgba(107,150,173,.55)' });
+  }
+
+  function drawSuccess(g, ctx) {
+    const a = clamp(g.successT / 0.4, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = a;
+    g.roundRect(335, 108, 290, 46, 12, 'rgba(5,26,38,.9)', 'rgba(56,189,248,.45)', 1);
+    g.text('BEACON REACHED', 480, 128, { size: 13, align: 'center', font: MONO, color: '#bae6fd', glow: '#38bdf8', blur: 12 });
+    g.text('+' + g.lastGain + ' PTS', 480, 145, { size: 9, align: 'center', font: MONO, color: '#6ee7b7' });
+    ctx.restore();
+  }
+
+  function drawFail(g, ctx) {
+    const flash = g.failFlash * 0.35;
+    if (flash > 0) {
+      const v = ctx.createRadialGradient(480, 300, 180, 480, 300, 620);
+      v.addColorStop(0, 'rgba(251,113,133,0)');
+      v.addColorStop(1, 'rgba(251,113,133,' + flash + ')');
+      ctx.fillStyle = v;
+      ctx.fillRect(0, 0, W, H);
+    }
+    const a = clamp(g.failT / 0.3, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = a;
+    g.roundRect(325, 108, 310, 62, 12, 'rgba(38,8,14,.9)', 'rgba(251,113,133,.45)', 1);
+    g.text(g.failReason, 480, 130, { size: 13, align: 'center', font: MONO, color: '#fecdd3' });
+    g.text(g.retries > 0 ? g.retries + ' RETRIES LEFT' : 'NO SIGNAL LEFT', 480, 152,
+      { size: 9, align: 'center', font: MONO, color: '#fb7185' });
+    ctx.restore();
+  }
+
+  function drawVictory(g, ctx) {
+    const a = Math.min(clamp((2.2 - g.victoryT) / 0.3, 0, 1), clamp(g.victoryT / 0.5, 0, 1));
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.shadowColor = 'rgba(56,189,248,.55)';
+    ctx.shadowBlur = 50;
+    g.roundRect(250, 240, 460, 130, 20, 'rgba(4,20,31,.95)', 'rgba(56,189,248,.55)', 1.5);
+    ctx.shadowBlur = 0;
+    g.text('ORBITS TAMED', 480, 300, { size: 34, align: 'center', font: MONO, color: '#e0f2fe', glow: '#38bdf8', blur: 20 });
+    g.text('FIVE BEACONS REACHED · GRAVITY IS YOURS', 480, 334,
+      { size: 9.5, align: 'center', font: MONO, color: '#7dd3fc' });
+    ctx.restore();
+  }
+
+  function drawVignette(g, ctx) {
+    const v = ctx.createRadialGradient(480, 300, 220, 480, 300, 650);
+    v.addColorStop(0, 'rgba(0,0,0,0)');
+    v.addColorStop(1, 'rgba(1,4,9,.62)');
+    ctx.fillStyle = v;
+    ctx.fillRect(0, 0, W, H);
+  }
+})();
+</script>
+</body>
+</html>

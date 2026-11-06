@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>Wrist Hop · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+  const W = 960, H = 600;
+  const MONO = "'IBM Plex Mono',monospace";
+  const GROUND = 522, BX = 250, BR = 18, GAP_H = 192;
+
+  function spawnPylon(g, x, prevGap) {
+    let gap = g.rand(172, GROUND - 168);
+    if (prevGap != null) {
+      gap = g.clamp(gap, prevGap - 145, prevGap + 145);
+      gap = g.clamp(gap, 172, GROUND - 168);
+    }
+    g.pylons.push({ x, w: 82, gap, passed: false });
+    g.lastGap = gap;
+  }
+
+  function flap(g) {
+    if (g.dead) return;
+    g.bird.vy = -555;
+    g.bird.wing = 1;
+    g.bird.grace = 0;
+    g.audio.sfx('pop');
+    g.audio.tone(300, 0.08, 'sine', 0.07, { slide: 560 });
+    g.haptic('tick');
+    g.burst(BX - 18, g.bird.y + 8, 'rgba(255,235,190,.8)', 6, { speed: 90, life: 0.35, size: 2.2, gravity: 260, angle: Math.PI * 0.75, spread: 1.4 });
+  }
+
+  function die(g, reason) {
+    if (g.dead) return;
+    g.dead = true;
+    g.audio.sfx('hit');
+    g.audio.sfx('lose');
+    g.haptic('crash');
+    g.shake(13, 0.5);
+    g.burst(BX, g.bird.y, '#ffd166', 26, { speed: 320, life: 0.9, size: 3.6, gravity: 700 });
+    g.burst(BX, g.bird.y, '#fff1c9', 14, { speed: 220, life: 0.6, size: 2.6, gravity: 500 });
+    g.burst(BX, g.bird.y, '#fbbf24', 12, { speed: 260, life: 0.75, size: 4, gravity: 620 });
+    g.over('Cleared ' + g.pass + ' pylons · Best ' + Math.max(g.best, g.score));
+  }
+
+  function circleRect(cx, cy, r, x, y, w, h) {
+    const nx = Math.max(x, Math.min(cx, x + w));
+    const ny = Math.max(y, Math.min(cy, y + h));
+    return (cx - nx) * (cx - nx) + (cy - ny) * (cy - ny) < r * r;
+  }
+
+  WristGame.mount({
+    id: 'wrist-hop',
+    title: 'Wrist Hop',
+    tagline: 'Tap. Float. Regret nothing.',
+    category: 'Arcade',
+    accent: '#fbbf24',
+    bg: '#0a0803',
+    controls: [
+      { keys: 'SPACE', label: 'HOP' },
+      { keys: 'WATCH', label: 'ACTION' }
+    ],
+    tips: [
+      'Tap to flap — gravity does the rest.',
+      'A gentle tap beats a panicked mash. Find the rhythm.',
+      'Any watch button flaps. Thread the gap, not the pylon.'
+    ],
+
+    init(g) {
+      if (!g.clamp) {
+        g.clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+        g.lerp = (a, b, t) => a + (b - a) * t;
+        g.rand = (a = 0, b = 1) => a + Math.random() * (b - a);
+        g.randInt = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+        g.pick = arr => arr[Math.floor(Math.random() * arr.length)];
+        g.dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+        g.angle = (x1, y1, x2, y2) => Math.atan2(y2 - y1, x2 - x1);
+      }
+      g.audio.stopMusic();
+      g.score = 0;
+      g.pass = 0;
+      g.speed = 218;
+      g.world = 0;
+      g.bird = { y: 268, vy: 0, rot: 0, wing: 0, grace: 0.65 };
+      g.pylons = [];
+      g.spawnAcc = 0;
+      g.lastGap = null;
+      g.dead = false;
+      g.clouds = [];
+      for (let i = 0; i < 9; i++) {
+        g.clouds.push({ x: g.rand(0, W), y: g.rand(60, 330), s: g.rand(0.55, 1.3), sp: g.rand(0.05, 0.16), a: g.rand(0.18, 0.4) });
+      }
+      g.sparkleT = 0;
+      spawnPylon(g, W + 140, null);
+      spawnPylon(g, W + 140 + 330, g.lastGap);
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 196, bpm: 118, scale: [0, 2, 4, 7, 9], wave: 'triangle', gain: 0.04 });
+    },
+
+    onAction(g, action, down) {
+      if (!down) return;
+      flap(g);
+    },
+
+    onPointer(g, x, y, type) {
+      if (type === 'down') flap(g);
+    },
+
+    update(g, dt) {
+      if (g.dead) return;
+      const b = g.bird;
+      g.world += g.speed * dt;
+      g.speed = Math.min(330, 218 + g.pass * 2.4);
+
+      if (b.grace > 0) {
+        b.grace -= dt;
+        b.y = 268 + Math.sin(g.time * 3.6) * 7;
+        b.vy = 0;
+        b.rot += (0 - b.rot) * Math.min(1, dt * 8);
+      } else {
+        b.vy += 1490 * dt;
+        b.vy = Math.min(b.vy, 760);
+        b.y += b.vy * dt;
+        const target = g.clamp(b.vy / 820, -0.55, 0.95);
+        b.rot += (target - b.rot) * Math.min(1, dt * 7);
+      }
+      b.wing = Math.max(0, b.wing - dt * 4.4);
+
+      // clouds
+      for (const c of g.clouds) {
+        c.x -= (g.speed * 0.12 + 6) * c.sp * dt * 6;
+        if (c.x < -220) { c.x = W + g.rand(60, 240); c.y = g.rand(50, 340); }
+      }
+
+      // spawn pylons
+      const last = g.pylons[g.pylons.length - 1];
+      if (!last || last.x < W + 20) {
+        spawnPylon(g, last ? last.x + 320 : W + 160, g.lastGap);
+      }
+
+      // move + collide
+      for (let i = g.pylons.length - 1; i >= 0; i--) {
+        const p = g.pylons[i];
+        p.x -= g.speed * dt;
+
+        const topH = p.gap - GAP_H / 2;
+        const botY = p.gap + GAP_H / 2;
+        if (circleRect(BX, b.y, BR, p.x, 0, p.w, topH) || circleRect(BX, b.y, BR, p.x, botY, p.w, GROUND - botY)) {
+          die(g, 'pylon');
+          return;
+        }
+
+        if (!p.passed && p.x + p.w < BX) {
+          p.passed = true;
+          g.pass++;
+          g.addScore(1);
+          g.audio.sfx('coin');
+          g.audio.tone(740, 0.06, 'triangle', 0.06, { slide: 1040 });
+          g.haptic('coin');
+          g.burst(BX + 10, b.y, '#ffe9a8', 8, { speed: 130, life: 0.45, size: 2.4, gravity: 80 });
+        }
+        if (p.x + p.w < -60) g.pylons.splice(i, 1);
+      }
+
+      if (b.y - BR < 0) { b.y = BR; die(g, 'ceiling'); return; }
+      if (b.y + BR > GROUND) { b.y = GROUND - BR; die(g, 'ground'); return; }
+
+      g.sparkleT -= dt;
+      if (g.sparkleT <= 0) {
+        g.sparkleT = 0.14;
+        g.burst(BX - 24, b.y + 6, 'rgba(255,225,160,.55)', 1, { speed: 40, life: 0.6, size: 1.6, gravity: -20, angle: Math.PI, spread: 0.5 });
+      }
+    },
+
+    draw(g, ctx) {
+      g.clear('#0a0803');
+      // warm sky
+      const sky = ctx.createLinearGradient(0, 0, 0, GROUND);
+      sky.addColorStop(0, '#241435');
+      sky.addColorStop(0.35, '#6b2c46');
+      sky.addColorStop(0.66, '#d0694a');
+      sky.addColorStop(0.88, '#f7ad63');
+      sky.addColorStop(1, '#ffd98f');
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, W, GROUND);
+
+      // stars high
+      ctx.globalAlpha = 0.45;
+      for (let i = 0; i < 34; i++) {
+        const x = (i * 149.3) % W;
+        const y = (i * 53.1) % 200;
+        ctx.fillStyle = i % 8 === 0 ? '#ffe1a8' : '#e7c6d0';
+        ctx.fillRect(x, y, i % 6 === 0 ? 2 : 1, 1);
+      }
+      ctx.globalAlpha = 1;
+
+      // sun
+      const sun = ctx.createRadialGradient(748, 350, 10, 748, 350, 150);
+      sun.addColorStop(0, 'rgba(255,240,180,1)');
+      sun.addColorStop(0.45, 'rgba(255,196,110,.9)');
+      sun.addColorStop(1, 'rgba(255,150,80,0)');
+      ctx.fillStyle = sun;
+      ctx.beginPath(); ctx.arc(748, 350, 150, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = 'rgba(255,226,150,.92)';
+      ctx.beginPath(); ctx.arc(748, 350, 82, 0, Math.PI * 2); ctx.fill();
+
+      // soft clouds
+      for (const c of g.clouds) {
+        ctx.save();
+        ctx.globalAlpha = c.a;
+        ctx.fillStyle = '#ffe0b0';
+        ctx.translate(c.x, c.y);
+        ctx.scale(c.s, c.s);
+        ctx.beginPath(); ctx.ellipse(0, 0, 64, 18, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(-28, -8, 30, 16, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.beginPath(); ctx.ellipse(26, -10, 36, 20, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+
+      // far skyline
+      drawCity(ctx, g.world * 0.1, 96, GROUND - 46, 'rgba(74,30,66,.55)', 60, 140);
+      drawCity(ctx, g.world * 0.24, 132, GROUND - 6, 'rgba(45,16,46,.85)', 70, 170);
+      drawCity(ctx, g.world * 0.42, 172, GROUND + 10, 'rgba(28,10,30,.98)', 80, 190);
+
+      // pylons
+      for (const p of g.pylons) drawPylon(g, ctx, p);
+
+      // ground
+      const gg = ctx.createLinearGradient(0, GROUND, 0, H);
+      gg.addColorStop(0, '#3b2414');
+      gg.addColorStop(0.2, '#241408');
+      gg.addColorStop(1, '#0d0703');
+      ctx.fillStyle = gg; ctx.fillRect(0, GROUND, W, H - GROUND);
+      ctx.save();
+      ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 18;
+      ctx.strokeStyle = '#f7ad63'; ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.moveTo(0, GROUND); ctx.lineTo(W, GROUND); ctx.stroke();
+      ctx.restore();
+      ctx.globalAlpha = 0.25;
+      for (let i = -1; i < 16; i++) {
+        const x = i * 100 - (g.world * 0.9) % 100;
+        ctx.fillStyle = '#fbbf24';
+        ctx.fillRect(x, GROUND + 34, 46, 3);
+      }
+      ctx.globalAlpha = 1;
+
+      // bird shadow on ground
+      ctx.globalAlpha = 0.16;
+      ctx.fillStyle = '#1a0d05';
+      ctx.beginPath();
+      ctx.ellipse(BX, GROUND + 4, 24, 6, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.globalAlpha = 1;
+
+      drawBird(g, ctx);
+
+      // HUD
+      g.text(String(g.pass), W / 2, 92, { size: 54, align: 'center', weight: 800, color: '#fff4d8', glow: '#fbbf24', blur: 26 });
+      g.text('PYLONS', W / 2, 116, { size: 9, align: 'center', color: 'rgba(255,225,170,.55)', font: MONO });
+      g.text('SPEED ' + Math.floor(g.speed), 36, 40, { size: 9, color: 'rgba(255,225,170,.55)', font: MONO });
+      g.text('TAP / SPACE TO FLAP', W - 36, 40, { size: 9, align: 'right', color: 'rgba(255,225,170,.55)', font: MONO });
+
+      if (g.bird.grace > 0) {
+        const a = 0.55 + Math.sin(g.time * 5) * 0.25;
+        ctx.globalAlpha = a;
+        g.text('TAP TO FLAP', W / 2, 372, { size: 20, align: 'center', color: '#fff4d8', font: MONO, glow: '#fbbf24', blur: 14 });
+        ctx.globalAlpha = 1;
+      }
+
+      const v = ctx.createRadialGradient(480, 300, 280, 480, 300, 640);
+      v.addColorStop(0, 'rgba(0,0,0,0)');
+      v.addColorStop(1, 'rgba(0,0,0,.4)');
+      ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+    }
+  });
+
+  function drawCity(ctx, offset, step, baseY, color, minH, maxH) {
+    const baseIdx = Math.floor(offset / step);
+    const shift = offset % step;
+    ctx.fillStyle = color;
+    for (let i = -1; i <= Math.ceil(W / step) + 1; i++) {
+      const idx = baseIdx + i;
+      const x = i * step - shift;
+      const h = minH + ((Math.sin(idx * 9.13) * 0.5 + 0.5) * (maxH - minH));
+      const w = step - 10 - ((Math.sin(idx * 4.7) * 0.5 + 0.5) * 18);
+      ctx.fillRect(x, baseY - h, w, h);
+      if (Math.sin(idx * 2.3) > 0.55) {
+        ctx.fillRect(x + w * 0.5 - 1.5, baseY - h - 14, 3, 14);
+        ctx.fillRect(x + w * 0.5 - 5, baseY - h - 14, 10, 3);
+      }
+    }
+  }
+
+  function drawPylon(g, ctx, p) {
+    const topH = p.gap - GAP_H / 2;
+    const botY = p.gap + GAP_H / 2;
+    const grad = ctx.createLinearGradient(p.x, 0, p.x + p.w, 0);
+    grad.addColorStop(0, '#7a4a18');
+    grad.addColorStop(0.18, '#c98a30');
+    grad.addColorStop(0.55, '#f6c45c');
+    grad.addColorStop(0.85, '#c98a30');
+    grad.addColorStop(1, '#6b3c12');
+    ctx.save();
+    ctx.shadowColor = 'rgba(251,191,36,.45)'; ctx.shadowBlur = 16;
+    g.roundRect(p.x, -14, p.w, topH + 14, 8, grad);
+    g.roundRect(p.x, botY, p.w, GROUND - botY, 8, grad);
+    ctx.restore();
+    // edge highlights
+    ctx.globalAlpha = 0.4; ctx.fillStyle = '#ffe9b0';
+    ctx.fillRect(p.x + 9, 0, 4, Math.max(0, topH - 6));
+    ctx.fillRect(p.x + 9, botY + 6, 4, GROUND - botY - 12);
+    ctx.globalAlpha = 1;
+    // gap lips
+    ctx.save();
+    ctx.shadowColor = '#fff0b8'; ctx.shadowBlur = 16;
+    ctx.fillStyle = '#ffe9b0';
+    ctx.fillRect(p.x - 5, topH - 8, p.w + 10, 8);
+    ctx.fillRect(p.x - 5, botY, p.w + 10, 8);
+    ctx.restore();
+    // decorative bands
+    ctx.globalAlpha = 0.22; ctx.fillStyle = '#3d1f05';
+    for (let y = 34; y < topH - 22; y += 42) ctx.fillRect(p.x + 4, y, p.w - 8, 7);
+    for (let y = botY + 28; y < GROUND - 20; y += 42) ctx.fillRect(p.x + 4, y, p.w - 8, 7);
+    ctx.globalAlpha = 1;
+    // little flag
+    const sway = Math.sin(g.time * 3 + p.x * 0.02) * 3;
+    ctx.strokeStyle = '#4d2a08'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(p.x + p.w - 12, topH); ctx.lineTo(p.x + p.w - 12, topH - 24); ctx.stroke();
+    ctx.fillStyle = '#ff8a55';
+    ctx.beginPath();
+    ctx.moveTo(p.x + p.w - 12, topH - 24);
+    ctx.lineTo(p.x + p.w - 38 + sway, topH - 19);
+    ctx.lineTo(p.x + p.w - 12, topH - 12);
+    ctx.closePath(); ctx.fill();
+  }
+
+  function drawBird(g, ctx) {
+    const b = g.bird;
+    ctx.save();
+    ctx.translate(BX, b.y);
+    ctx.rotate(b.rot);
+
+    // tail
+    ctx.fillStyle = '#e09a2c';
+    ctx.beginPath();
+    ctx.moveTo(-16, 2); ctx.lineTo(-34, -6); ctx.lineTo(-28, 4); ctx.lineTo(-34, 12);
+    ctx.closePath(); ctx.fill();
+
+    // body
+    ctx.save();
+    ctx.shadowColor = '#ffcf6b'; ctx.shadowBlur = 18;
+    const bg = ctx.createLinearGradient(-18, -18, 18, 20);
+    bg.addColorStop(0, '#fff0b8');
+    bg.addColorStop(0.5, '#fbc94a');
+    bg.addColorStop(1, '#d98a1e');
+    ctx.fillStyle = bg;
+    ctx.beginPath(); ctx.ellipse(0, 0, 22, 17, -0.08, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+    ctx.strokeStyle = 'rgba(120,70,10,.55)'; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.ellipse(0, 0, 22, 17, -0.08, 0, Math.PI * 2); ctx.stroke();
+
+    // wing
+    const flap = b.wing > 0.05 ? -1 + b.wing * 0.3 : Math.sin(g.time * 12) * 0.35;
+    ctx.save();
+    ctx.translate(-3, -3);
+    ctx.rotate(flap * 0.9);
+    const wg = ctx.createLinearGradient(0, -6, 0, 18);
+    wg.addColorStop(0, '#fff3c4');
+    wg.addColorStop(1, '#e2a02e');
+    ctx.fillStyle = wg;
+    ctx.strokeStyle = 'rgba(140,85,15,.6)'; ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.ellipse(-4, 6, 14, 9, 0.35, 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke();
+    ctx.restore();
+
+    // eye
+    ctx.fillStyle = '#fffdf2';
+    ctx.beginPath(); ctx.arc(11, -6, 6.4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#241304';
+    ctx.beginPath(); ctx.arc(12.8, -6, 3.2, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath(); ctx.arc(14, -7.4, 1.2, 0, Math.PI * 2); ctx.fill();
+
+    // beak
+    ctx.fillStyle = '#ff7a3c';
+    ctx.beginPath();
+    ctx.moveTo(19, -2); ctx.lineTo(33, 3); ctx.lineTo(19, 8);
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(150,60,10,.7)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(20, 3); ctx.lineTo(30, 3.6); ctx.stroke();
+
+    // cheek
+    ctx.globalAlpha = 0.35;
+    ctx.fillStyle = '#ff9d6b';
+    ctx.beginPath(); ctx.arc(10, 4, 3.4, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // tiny scarf
+    ctx.strokeStyle = '#ff6b4a'; ctx.lineWidth = 3;
+    const sw = Math.sin(g.time * 8) * 3;
+    ctx.beginPath();
+    ctx.moveTo(-15, -1);
+    ctx.quadraticCurveTo(-28, sw, -40, 4 + sw);
+    ctx.stroke();
+    ctx.fillStyle = '#ff6b4a';
+    ctx.beginPath();
+    ctx.moveTo(-38, 1 + sw); ctx.lineTo(-48, 0 + sw); ctx.lineTo(-46, 9 + sw); ctx.lineTo(-38, 6 + sw);
+    ctx.closePath(); ctx.fill();
+
+    ctx.restore();
+  }
+})();
+</script>
+</body>
+</html>

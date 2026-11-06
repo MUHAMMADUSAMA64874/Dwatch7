@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Grid 2048 · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const U = WristGame.util;
+  const clamp = U.clamp, lerp = U.lerp, rand = U.rand, pick = U.pick;
+  const TAU = Math.PI * 2;
+  const W = 960, H = 600;
+  const MONO = "'IBM Plex Mono',monospace";
+
+  const BX = 253, BY = 100;
+  const CELL = 96, GAP = 14;
+  const BOARD = CELL * 4 + GAP * 5;
+
+  const STYLES = {
+    2: ['#eef8d8', '#dcefb8', '#2b3a12'],
+    4: ['#e3f5bd', '#cdea98', '#26370e'],
+    8: ['#d4f096', '#b7e266', '#203305'],
+    16: ['#c4ec72', '#9fd63f', '#1d2e04'],
+    32: ['#b2e552', '#86c420', '#f5ffe6'],
+    64: ['#95d332', '#6eab12', '#f7ffe9'],
+    128: ['#fde68a', '#f7c948', '#3d2a06'],
+    256: ['#fcd34d', '#f2b01e', '#3d2605'],
+    512: ['#fbbf24', '#ec930c', '#3d1f04'],
+    1024: ['#fb923c', '#ef700b', '#3d1604'],
+    2048: ['#f472b6', '#db2777', '#fff0f7'],
+    4096: ['#c084fc', '#a855f7', '#f9f0ff'],
+    8192: ['#818cf8', '#6366f1', '#eef0ff']
+  };
+  const FALLBACK = ['#f0abfc', '#c026d3', '#ffffff'];
+
+  function styleFor(v) { return STYLES[v] || FALLBACK; }
+
+  function cellPos(i) {
+    const c = i % 4, r = Math.floor(i / 4);
+    return { x: BX + GAP + c * (CELL + GAP), y: BY + GAP + r * (CELL + GAP) };
+  }
+  function cellCenter(i) {
+    const p = cellPos(i);
+    return { x: p.x + CELL / 2, y: p.y + CELL / 2 };
+  }
+
+  function linesFor(dir) {
+    const lines = [];
+    if (dir === 'left' || dir === 'right') {
+      for (let r = 0; r < 4; r++) {
+        const line = [];
+        for (let c = 0; c < 4; c++) line.push(r * 4 + (dir === 'left' ? c : 3 - c));
+        lines.push(line);
+      }
+    } else {
+      for (let c = 0; c < 4; c++) {
+        const line = [];
+        for (let r = 0; r < 4; r++) line.push((dir === 'up' ? r : 3 - r) * 4 + c);
+        lines.push(line);
+      }
+    }
+    return lines;
+  }
+
+  function addTile(g, instant) {
+    const empty = [];
+    for (let i = 0; i < 16; i++) if (g.tiles[i] === 0) empty.push(i);
+    if (!empty.length) return -1;
+    const i = pick(empty);
+    const v = Math.random() < 0.9 ? 2 : 4;
+    g.tiles[i] = v;
+    g.spawns.push({ i, t: instant ? 0.2 : 0 });
+    g.maxTile = Math.max(g.maxTile, v);
+    return i;
+  }
+
+  function canMove(g) {
+    for (let i = 0; i < 16; i++) if (g.tiles[i] === 0) return true;
+    for (let r = 0; r < 4; r++) {
+      for (let c = 0; c < 4; c++) {
+        const v = g.tiles[r * 4 + c];
+        if (c < 3 && g.tiles[r * 4 + c + 1] === v) return true;
+        if (r < 3 && g.tiles[(r + 1) * 4 + c] === v) return true;
+      }
+    }
+    return false;
+  }
+
+  function slide(g, dir) {
+    if (g.moving || g.won || g.dead || g.state !== 'running') return;
+    const old = g.tiles;
+    const next = new Array(16).fill(0);
+    const anims = [];
+    const merges = [];
+    let gained = 0, moved = false;
+
+    for (const line of linesFor(dir)) {
+      const items = [];
+      for (const idx of line) {
+        if (old[idx]) items.push({ v: old[idx], from: idx });
+      }
+      const out = [];
+      for (const it of items) {
+        const last = out[out.length - 1];
+        if (last && last.v === it.v && !last.merged) {
+          last.v *= 2;
+          last.merged = true;
+          last.sources.push(it.from);
+          gained += last.v;
+          moved = true;
+        } else {
+          out.push({ v: it.v, sources: [it.from], merged: false });
+        }
+      }
+      out.forEach((o, k) => {
+        const dest = line[k];
+        next[dest] = o.v;
+        for (const src of o.sources) {
+          anims.push({ v: old[src], from: src, to: dest });
+          if (src !== dest) moved = true;
+        }
+        if (o.sources.length > 1) merges.push(dest);
+      });
+    }
+
+    if (!moved) return;
+
+    g.tiles = next;
+    g.anims = anims;
+    g.animT = 0;
+    g.moving = true;
+    g.pendingMerges = merges;
+    g.moveCount++;
+    g.audio.sfx('whoosh');
+    g.haptic('tick');
+
+    if (gained > 0) g.addScore(gained);
+    for (let i = 0; i < 16; i++) if (next[i] > g.maxTile) g.maxTile = next[i];
+  }
+
+  function finishMove(g) {
+    g.moving = false;
+    g.anims = [];
+
+    if (g.pendingMerges.length) {
+      g.audio.sfx('coin');
+      g.haptic('coin');
+      for (const dest of g.pendingMerges) {
+        const c = cellCenter(dest);
+        const v = g.tiles[dest];
+        g.pops.push({ i: dest, t: 0, life: 0.3, color: styleFor(v)[0] });
+        g.floats.push({ text: '+' + v, x: c.x, y: c.y, t: 0, life: 0.7, color: styleFor(v)[0] });
+        g.burst(c.x, c.y, styleFor(v)[0], 12, {
+          speed: 150, life: 0.55, size: 2.8, gravity: 60, shape: 'square'
+        });
+        g.burst(c.x, c.y, '#ffffff', 4, { speed: 90, life: 0.35, size: 1.8 });
+      }
+      if (g.pops.length > 10) g.pops.splice(0, g.pops.length - 10);
+      if (g.floats.length > 8) g.floats.splice(0, g.floats.length - 8);
+    }
+    g.pendingMerges = [];
+
+    addTile(g, false);
+
+    if (!g.won && g.maxTile >= 2048) {
+      g.won = true;
+      g.winDelay = 1.0;
+      g.addScore(2048);
+      g.audio.sfx('win');
+      g.haptic('coin');
+      g.shake(5, 0.3);
+      for (let i = 0; i < 16; i++) {
+        if (g.tiles[i] >= 2048) {
+          const c = cellCenter(i);
+          g.burst(c.x, c.y, '#f472b6', 44, { speed: 280, life: 1.1, size: 4 });
+          g.burst(c.x, c.y, '#fcd34d', 22, { speed: 200, life: 0.9, size: 3 });
+          g.floats.push({ text: '2048!', x: c.x, y: c.y - 20, t: 0, life: 1.2, color: '#f9a8d4' });
+        }
+      }
+      return;
+    }
+
+    if (!canMove(g)) {
+      g.dead = true;
+      g.audio.sfx('buzzer');
+      g.shake(9, 0.4);
+      g.over('No moves · max tile ' + g.maxTile + ' · ' + g.moveCount + ' slides');
+    }
+  }
+
+  WristGame.mount({
+    id: 'grid-2048',
+    title: 'Grid 2048',
+    tagline: 'Merge gently. Lose loudly.',
+    category: 'Puzzle',
+    accent: '#a3e635',
+    bg: '#080b03',
+    controls: [
+      { keys: '← → ↑ ↓', label: 'SLIDE' },
+      { keys: 'DRAG', label: 'SWIPE' },
+      { keys: 'WATCH', label: 'LEFT / RIGHT' }
+    ],
+    tips: [
+      'Equal tiles merge into one bigger tile. Reach 2048 to win.',
+      'Arrows and WASD both slide. Swipe on the board too.',
+      'No empty cells and no equal neighbours means the grid is done.'
+    ],
+
+    init(g) {
+      g.score = 0;
+      g.tiles = new Array(16).fill(0);
+      g.anims = [];
+      g.animT = 1;
+      g.moving = false;
+      g.pendingMerges = [];
+      g.spawns = [];
+      g.pops = [];
+      g.floats = [];
+      g.moveCount = 0;
+      g.maxTile = 0;
+      g.won = false;
+      g.dead = false;
+      g.winDelay = 0;
+      g.drag = null;
+      g.audio.stopMusic();
+      addTile(g, true);
+      addTile(g, true);
+
+      if (!g._arrowGuard) {
+        g._arrowGuard = true;
+        window.addEventListener('keydown', e => {
+          if (e.code.indexOf('Arrow') === 0) e.preventDefault();
+        }, { passive: false });
+      }
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 196, bpm: 100, scale: [0, 2, 4, 7, 9], wave: 'triangle', gain: 0.03 });
+    },
+
+    onAction(g, action, down) {
+      if (!down) return;
+      if (action === 'left') slide(g, 'left');
+      else if (action === 'right') slide(g, 'right');
+      else if (action === 'up') slide(g, 'up');
+      else if (action === 'down') slide(g, 'down');
+    },
+
+    onPointer(g, x, y, type) {
+      if (type === 'down') {
+        g.drag = { x, y };
+      } else if (type === 'up') {
+        if (!g.drag) return;
+        const dx = x - g.drag.x, dy = y - g.drag.y;
+        g.drag = null;
+        if (Math.max(Math.abs(dx), Math.abs(dy)) < 28) return;
+        if (Math.abs(dx) > Math.abs(dy)) slide(g, dx > 0 ? 'right' : 'left');
+        else slide(g, dy > 0 ? 'down' : 'up');
+      }
+    },
+
+    update(g, dt) {
+      if (g.moving) {
+        g.animT = Math.min(1, g.animT + dt / 0.12);
+        if (g.animT >= 1) finishMove(g);
+      }
+
+      for (let i = g.spawns.length - 1; i >= 0; i--) {
+        g.spawns[i].t += dt;
+        if (g.spawns[i].t > 0.2) g.spawns.splice(i, 1);
+      }
+      for (let i = g.pops.length - 1; i >= 0; i--) {
+        g.pops[i].t += dt;
+        if (g.pops[i].t >= g.pops[i].life) g.pops.splice(i, 1);
+      }
+      for (let i = g.floats.length - 1; i >= 0; i--) {
+        g.floats[i].t += dt;
+        if (g.floats[i].t >= g.floats[i].life) g.floats.splice(i, 1);
+      }
+
+      if (g.won && !g.dead) {
+        g.winDelay -= dt;
+        if (g.winDelay <= 0) {
+          g.dead = true;
+          g.over('2048 reached in ' + g.moveCount + ' slides · max tile ' + g.maxTile);
+        }
+      }
+    },
+
+    draw(g, ctx) {
+      g.clear('#080b03');
+
+      const bg = ctx.createRadialGradient(480, 300, 60, 480, 320, 700);
+      bg.addColorStop(0, 'rgba(56,84,14,.4)');
+      bg.addColorStop(0.55, 'rgba(22,32,6,.28)');
+      bg.addColorStop(1, 'rgba(3,5,1,0)');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      g.grid('rgba(163,230,53,.035)', 44);
+      drawHeader(g, ctx);
+      drawBoard(g, ctx);
+      drawTiles(g, ctx);
+      drawPops(g, ctx);
+
+      for (const f of g.floats) {
+        const k = f.t / f.life;
+        g.text(f.text, f.x, f.y - 14 - k * 30, {
+          size: 17, color: f.color, font: MONO, align: 'center', weight: 700,
+          alpha: 1 - k * k, glow: f.color, blur: 12
+        });
+      }
+
+      g.text('SWIPE  ·  ARROWS  ·  WATCH ◀ ▶', 480, H - 18, {
+        size: 9, color: 'rgba(163,230,53,.32)', font: MONO, align: 'center'
+      });
+
+      const vg = ctx.createRadialGradient(480, 300, 240, 480, 320, 660);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(0,0,0,.5)');
+      ctx.fillStyle = vg;
+      ctx.fillRect(0, 0, W, H);
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+
+  function drawHeader(g, ctx) {
+    const st = styleFor(g.maxTile || 2);
+    g.text('MAX TILE', BX, 34, { size: 9, color: 'rgba(163,230,53,.5)', font: MONO });
+    g.text(String(g.maxTile || 0), BX, 70, {
+      size: 28, color: st[0], font: MONO, weight: 700,
+      glow: g.maxTile >= 512 ? st[1] : null, blur: 18
+    });
+
+    g.text('TARGET', 480, 34, { size: 9, color: 'rgba(163,230,53,.5)', font: MONO, align: 'center' });
+    g.roundRect(480 - 45, 48, 90, 26, 7, 'rgba(163,230,53,.08)', 'rgba(163,230,53,.28)', 1);
+    g.text('2048', 480, 66, { size: 16, color: '#d9f99d', font: MONO, align: 'center', weight: 700 });
+
+    g.text('SLIDES', BX + BOARD, 34, { size: 9, color: 'rgba(163,230,53,.5)', font: MONO, align: 'right' });
+    g.text(String(g.moveCount), BX + BOARD, 70, {
+      size: 28, color: '#d9f99d', font: MONO, weight: 700, align: 'right'
+    });
+
+    // progress toward 2048
+    const p = clamp((Math.log2(Math.max(2, g.maxTile)) - 1) / 10, 0, 1);
+    g.roundRect(BX, 84, BOARD, 4, 2, 'rgba(163,230,53,.08)');
+    if (p > 0) {
+      const grd = ctx.createLinearGradient(BX, 0, BX + BOARD, 0);
+      grd.addColorStop(0, '#65a30d');
+      grd.addColorStop(1, '#d9f99d');
+      g.roundRect(BX, 84, BOARD * p, 4, 2, grd);
+    }
+  }
+
+  function drawBoard(g, ctx) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,.7)';
+    ctx.shadowBlur = 46;
+    ctx.shadowOffsetY = 20;
+    g.roundRect(BX - 14, BY - 14, BOARD + 28, BOARD + 28, 26, '#0a1005');
+    ctx.restore();
+
+    const surf = ctx.createLinearGradient(BX, BY, BX + BOARD, BY + BOARD);
+    surf.addColorStop(0, '#111a08');
+    surf.addColorStop(0.5, '#0c1305');
+    surf.addColorStop(1, '#080d03');
+    g.roundRect(BX, BY, BOARD, BOARD, 20, surf);
+
+    // inner top light
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(BX, BY, BOARD, BOARD, 20);
+    ctx.clip();
+    const light = ctx.createLinearGradient(0, BY, 0, BY + 160);
+    light.addColorStop(0, 'rgba(163,230,53,.07)');
+    light.addColorStop(1, 'rgba(163,230,53,0)');
+    ctx.fillStyle = light;
+    ctx.fillRect(BX, BY, BOARD, 160);
+    ctx.restore();
+
+    // watermark
+    ctx.save();
+    ctx.globalAlpha = 0.035;
+    ctx.translate(480, 334);
+    ctx.rotate(-0.06);
+    g.text('2048', 0, 0, {
+      size: 150, color: '#d9f99d', font: MONO, align: 'center', baseline: 'middle', weight: 700
+    });
+    ctx.restore();
+
+    for (let i = 0; i < 16; i++) {
+      const p = cellPos(i);
+      g.roundRect(p.x, p.y, CELL, CELL, 12, 'rgba(163,230,53,.035)', 'rgba(163,230,53,.055)', 1);
+    }
+
+    g.roundRect(BX + 0.5, BY + 0.5, BOARD - 1, BOARD - 1, 20, null, 'rgba(163,230,53,.12)', 1);
+    g.roundRect(BX - 8, BY - 8, BOARD + 16, BOARD + 16, 24, null, 'rgba(163,230,53,.12)', 1.5);
+  }
+
+  function drawTiles(g, ctx) {
+    if (g.moving) {
+      for (const a of g.anims) {
+        const from = cellCenter(a.from), to = cellCenter(a.to);
+        const t = easeOutCubic(g.animT);
+        const x = lerp(from.x, to.x, t);
+        const y = lerp(from.y, to.y, t);
+        drawTile(g, ctx, x, y, CELL, a.v, 1);
+      }
+      return;
+    }
+
+    const spawnScale = {};
+    for (const s of g.spawns) spawnScale[s.i] = Math.min(1, s.t / 0.16);
+    const popScale = {};
+    for (const p of g.pops) popScale[p.i] = p.t / p.life;
+
+    for (let i = 0; i < 16; i++) {
+      const v = g.tiles[i];
+      if (!v) continue;
+      const p = cellCenter(i);
+      let sc = 1;
+      if (spawnScale[i] != null) {
+        const k = clamp(spawnScale[i], 0, 1);
+        sc = 0.35 + 0.65 * (1 - Math.pow(1 - k, 3));
+      }
+      if (popScale[i] != null) {
+        const k = popScale[i];
+        sc *= 1 + 0.16 * Math.sin(Math.min(1, k) * Math.PI);
+      }
+      if (g.won && v >= 2048) sc *= 1 + Math.sin(g.time * 5) * 0.02;
+      drawTile(g, ctx, p.x, p.y, CELL, v, sc);
+    }
+  }
+
+  function drawTile(g, ctx, x, y, size, value, scale) {
+    const st = styleFor(value);
+    const half = size / 2;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+
+    if (value >= 128) {
+      ctx.shadowColor = st[1];
+      ctx.shadowBlur = value >= 1024 ? 30 : 16;
+    } else {
+      ctx.shadowColor = 'rgba(0,0,0,.35)';
+      ctx.shadowBlur = 8;
+      ctx.shadowOffsetY = 3;
+    }
+
+    const grd = ctx.createLinearGradient(-half, -half, half, half);
+    grd.addColorStop(0, st[0]);
+    grd.addColorStop(1, st[1]);
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(-half, -half, size, size, 12);
+    else ctx.rect(-half, -half, size, size);
+    ctx.fillStyle = grd;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+
+    // top gloss
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(-half + 3, -half + 3, size - 6, size * 0.42, 10);
+    else ctx.rect(-half + 3, -half + 3, size - 6, size * 0.42);
+    ctx.fillStyle = 'rgba(255,255,255,.14)';
+    ctx.fill();
+
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(-half, -half, size, size, 12);
+    else ctx.rect(-half, -half, size, size);
+    ctx.strokeStyle = value >= 64 ? 'rgba(255,255,255,.22)' : 'rgba(20,35,6,.18)';
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+
+    const digits = String(value).length;
+    const fs = digits <= 2 ? 42 : digits === 3 ? 35 : digits === 4 ? 28 : 22;
+    g.text(String(value), 0, 2, {
+      size: fs, color: st[2], font: MONO, align: 'center', baseline: 'middle', weight: 700
+    });
+
+    ctx.restore();
+  }
+
+  function drawPops(g, ctx) {
+    for (const p of g.pops) {
+      const c = cellCenter(p.i);
+      const k = p.t / p.life;
+      ctx.save();
+      ctx.globalAlpha = (1 - k) * 0.65;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, CELL * 0.36 + k * CELL * 0.5, 0, TAU);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function easeOutCubic(t) {
+    return 1 - Math.pow(1 - t, 3);
+  }
+})();
+</script>
+</body>
+</html>

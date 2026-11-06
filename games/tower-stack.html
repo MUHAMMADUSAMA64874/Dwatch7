@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Tower Stack · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const U = WristGame.util;
+  const clamp = U.clamp, lerp = U.lerp, rand = U.rand, randInt = U.randInt;
+  const TAU = Math.PI * 2;
+  const W = 960, H = 600;
+  const MONO = "'IBM Plex Mono',monospace";
+
+  const FLOOR_H = 36;
+  const BASE_W = 240;
+  const BASE_X = 480;
+  const BASE_TOP = 524;
+  const GROUND_Y = 560;
+  const SWING_AMP = 300;
+  const PERFECT = 6;
+  const HOVER_GAP = 70;
+
+  const PALETTE = [
+    ['#f3eeff', '#c4b5fd'],
+    ['#e5ebff', '#a5b4fc'],
+    ['#fde8f4', '#f9a8d4'],
+    ['#d8fbf4', '#5eead4'],
+    ['#fff4d6', '#fcd34d'],
+    ['#ddeeff', '#93c5fd']
+  ];
+
+  function blurShadow(ctx, color, blur, oy) {
+    ctx.shadowColor = color;
+    ctx.shadowBlur = blur;
+    ctx.shadowOffsetY = oy || 0;
+  }
+
+  function easeInQuad(t) { return t * t; }
+  function easeOutCubic(t) { return 1 - Math.pow(1 - t, 3); }
+
+  function drawBlock(ctx, x, y, w, h, pair, alpha) {
+    if (w < 1) return;
+    const r = Math.min(6, w / 2, h / 2);
+    ctx.save();
+    if (alpha != null) ctx.globalAlpha = alpha;
+    const grd = ctx.createLinearGradient(x, y, x + w, y + h);
+    grd.addColorStop(0, pair[0]);
+    grd.addColorStop(1, pair[1]);
+    g_round(ctx, x, y, w, h, r, grd);
+    // top gloss
+    ctx.save();
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x + 2, y + 2, Math.max(0, w - 4), Math.max(2, h * 0.3), Math.max(1, r - 2));
+    else ctx.rect(x + 2, y + 2, Math.max(0, w - 4), Math.max(2, h * 0.3));
+    ctx.fillStyle = 'rgba(255,255,255,.35)';
+    ctx.fill();
+    ctx.restore();
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    else ctx.rect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(255,255,255,.18)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function g_round(ctx, x, y, w, h, r, fill) {
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, r);
+    else {
+      const rr = Math.min(r, w / 2, h / 2);
+      ctx.moveTo(x + rr, y);
+      ctx.arcTo(x + w, y, x + w, y + h, rr);
+      ctx.arcTo(x + w, y + h, x, y + h, rr);
+      ctx.arcTo(x, y + h, x, y, rr);
+      ctx.arcTo(x, y, x + w, y, rr);
+      ctx.closePath();
+    }
+    if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  }
+
+  WristGame.mount({
+    id: 'tower-stack',
+    title: 'Tower Stack',
+    tagline: 'Build high. Land true.',
+    category: 'Arcade',
+    accent: '#c4b5fd',
+    bg: '#0b0813',
+    controls: [
+      { keys: 'SPACE', label: 'DROP' },
+      { keys: 'CLICK', label: 'DROP' },
+      { keys: 'WATCH', label: 'ACTION' }
+    ],
+    tips: [
+      'Drop the slab while it swings over the tower.',
+      'Land within six pixels of centre: perfect restores your width.',
+      'Every perfect builds a combo. Every sloppy drop shaves width away.'
+    ],
+
+    init(g) {
+      g.score = 0;
+      g.floors = [{ x: BASE_X - BASE_W / 2, w: BASE_W, y: BASE_TOP }];
+      g.height = 0;
+      g.cam = 0;
+      g.phase = 'swing';
+      g.swingT = -Math.PI / 2;
+      g.swingSpeed = 1.05;
+      g.slab = {
+        w: BASE_W, left: BASE_X - BASE_W / 2, cx: BASE_X, y: BASE_TOP - FLOOR_H - HOVER_GAP,
+        dropT: 0, dropFrom: 0, dropTo: 0, dropLeft: 0, dropW: 0
+      };
+      g.nextW = BASE_W;
+      g.combo = 0;
+      g.bestCombo = 0;
+      g.perfectCount = 0;
+      g.settleT = 0;
+      g.missT = 0;
+      g.inputLock = 0;
+      g.debris = [];
+      g.floats = [];
+      g.flash = 0;
+      g.ended = false;
+      g.stars = Array.from({ length: 90 }, (_, i) => ({
+        x: (i * 211.7) % W,
+        y: (i * 127.3) % 430,
+        r: 0.6 + (i % 4) * 0.5,
+        tw: i * 1.37
+      }));
+      g.cityFar = Array.from({ length: 16 }, (_, i) => ({
+        x: i * 64 - 40 + rand(-12, 12),
+        w: rand(38, 74),
+        h: rand(80, 210),
+        seed: i
+      }));
+      g.cityNear = Array.from({ length: 12 }, (_, i) => ({
+        x: i * 86 - 30 + rand(-18, 18),
+        w: rand(52, 96),
+        h: rand(100, 250),
+        seed: i + 30
+      }));
+      g.audio.stopMusic();
+      g._actionHeld = false;
+      if (!g._actionKeys) {
+        g._actionKeys = true;
+        const isAction = c => c === 'Space' || c === 'Enter' || c === 'KeyJ' || c === 'KeyZ';
+        window.addEventListener('keydown', e => { if (isAction(e.code)) g._actionHeld = true; });
+        window.addEventListener('keyup', e => { if (isAction(e.code)) g._actionHeld = false; });
+        window.addEventListener('blur', () => { g._actionHeld = false; });
+      }
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 174.61, bpm: 94, scale: [0, 2, 4, 7, 11], wave: 'triangle', gain: 0.03 });
+      g.haptic('start');
+    },
+
+    onAction(g, action, down) {
+      if (!down || action !== 'action') return;
+      // ignore OS key-repeat: engine dispatches repeats too, the flag is set by our own listener
+      if (g._actionHeld) return;
+      drop(g);
+    },
+
+    onPointer(g, x, y, type) {
+      if (type === 'down') drop(g);
+    },
+
+    update(g, dt) {
+      g.flash = Math.max(0, g.flash - dt * 2.4);
+      if (g.inputLock > 0) g.inputLock -= dt;
+
+      for (let i = g.floats.length - 1; i >= 0; i--) {
+        g.floats[i].t += dt;
+        if (g.floats[i].t >= g.floats[i].life) g.floats.splice(i, 1);
+      }
+      for (let i = g.debris.length - 1; i >= 0; i--) {
+        const d = g.debris[i];
+        d.vy += 1250 * dt;
+        d.x += d.vx * dt;
+        d.y += d.vy * dt;
+        d.rot += d.vr * dt;
+        d.life -= dt;
+        if (d.life <= 0 || d.y - g.cam > H + 260) g.debris.splice(i, 1);
+      }
+
+      const top = g.floors[g.floors.length - 1];
+      const camTarget = Math.min(0, top.y - 430);
+      g.cam += (camTarget - g.cam) * Math.min(1, dt * 6.5);
+
+      if (g.phase === 'swing') {
+        g.swingSpeed = Math.min(2.45, 1.05 + g.height * 0.032);
+        g.swingT += g.swingSpeed * dt;
+        const hoverY = top.y - FLOOR_H - HOVER_GAP;
+        const minC = 82 + g.slab.w / 2;
+        const maxC = 878 - g.slab.w / 2;
+        let cx = BASE_X + Math.sin(g.swingT) * SWING_AMP;
+        cx = clamp(cx, minC, maxC);
+        g.slab.cx = cx;
+        g.slab.left = cx - g.slab.w / 2;
+        g.slab.y = hoverY;
+      } else if (g.phase === 'drop') {
+        g.slab.dropT = Math.min(1, g.slab.dropT + dt / 0.14);
+        g.slab.y = lerp(g.slab.dropFrom, g.slab.dropTo, easeInQuad(g.slab.dropT));
+        if (g.slab.dropT >= 1) resolveDrop(g);
+      } else if (g.phase === 'settle') {
+        g.settleT -= dt;
+        if (g.settleT <= 0) beginSwing(g);
+      } else if (g.phase === 'miss') {
+        g.missT -= dt;
+        if (g.missT <= 0 && !g.ended) {
+          g.ended = true;
+          g.over('Tower of ' + g.height + ' · ' + g.perfectCount + ' perfect · best ×' + Math.max(1, g.bestCombo));
+        }
+      }
+    },
+
+    draw(g, ctx) {
+      g.clear('#0b0813');
+
+      drawSky(g, ctx);
+      drawCity(g, ctx);
+      drawGround(g, ctx);
+
+      if (g.phase === 'swing' || g.phase === 'drop') drawGuide(g, ctx);
+
+      // tower
+      for (let i = 0; i < g.floors.length; i++) {
+        const f = g.floors[i];
+        const sy = f.y - g.cam;
+        if (sy < -FLOOR_H - 30 || sy > H + 40) continue;
+        const pair = PALETTE[i % PALETTE.length];
+        ctx.save();
+        blurShadow(ctx, 'rgba(0,0,0,.45)', 14, 5);
+        drawBlock(ctx, f.x, sy, f.w, FLOOR_H + 0.5, pair);
+        ctx.restore();
+        // soft inner line
+        ctx.fillStyle = 'rgba(255,255,255,.10)';
+        ctx.fillRect(f.x + 4, sy + FLOOR_H - 6, Math.max(0, f.w - 8), 1);
+      }
+
+      drawDebris(g, ctx);
+
+      if (g.phase === 'swing' || g.phase === 'drop') {
+        drawSlab(g, ctx);
+      }
+
+      drawHud(g, ctx);
+
+      for (const f of g.floats) {
+        const k = f.t / f.life;
+        g.text(f.text, f.x, f.y - k * 36, {
+          size: f.size || 18, color: f.color, font: MONO, align: 'center', weight: 700,
+          alpha: 1 - k * k, glow: f.color, blur: 14
+        });
+      }
+
+      if (g.flash > 0) {
+        ctx.fillStyle = 'rgba(255,250,235,' + (g.flash * 0.12) + ')';
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      g.text('SPACE / CLICK TO DROP', 480, H - 18, {
+        size: 9, color: 'rgba(196,181,253,.32)', font: MONO, align: 'center'
+      });
+    }
+  });
+
+  /* ------------------------------------------------------------------ */
+
+  function drop(g) {
+    if (g.phase !== 'swing' || g.inputLock > 0) return;
+    const top = g.floors[g.floors.length - 1];
+    g.phase = 'drop';
+    g.slab.dropT = 0;
+    g.slab.dropFrom = g.slab.y;
+    g.slab.dropTo = top.y - FLOOR_H;
+    g.slab.dropLeft = g.slab.left;
+    g.slab.dropW = g.slab.w;
+    g.inputLock = 0.28;
+    g.audio.sfx('whoosh');
+    g.haptic('tick');
+  }
+
+  function beginSwing(g) {
+    g.slab.w = g.nextW;
+    g.slab.left = g.floors[g.floors.length - 1].x;
+    g.slab.cx = g.slab.left + g.slab.w / 2;
+    g.slab.y = g.floors[g.floors.length - 1].y - FLOOR_H - HOVER_GAP;
+    g.swingT = (g.height % 2 === 0) ? -Math.PI / 2 : Math.PI / 2;
+    g.phase = 'swing';
+  }
+
+  function resolveDrop(g) {
+    const prev = g.floors[g.floors.length - 1];
+    const dl = g.slab.dropLeft;
+    const dw = g.slab.dropW;
+    const dropRight = dl + dw;
+    const center = dl + dw / 2;
+    const prevCenter = prev.x + prev.w / 2;
+    const left = Math.max(prev.x, dl);
+    const right = Math.min(prev.x + prev.w, dropRight);
+    const overlap = right - left;
+    const perfect = Math.abs(center - prevCenter) <= PERFECT;
+
+    if (overlap < 12) {
+      miss(g, dl, dw);
+      return;
+    }
+
+    const newY = prev.y - FLOOR_H;
+    let nx = left, nw = overlap, gain = 10;
+
+    if (perfect) {
+      nx = prev.x;
+      nw = prev.w;
+      g.combo++;
+      g.perfectCount++;
+      g.bestCombo = Math.max(g.bestCombo, g.combo);
+      gain += 50 * Math.min(5, g.combo);
+      g.flash = 0.6;
+      g.audio.sfx('coin');
+      g.audio.chord([784, 1046, 1318], 0.22, 'triangle', 0.06);
+      g.haptic('coin');
+      const sx = nx + nw / 2;
+      const sy = newY - g.cam;
+      g.burst(sx, sy + FLOOR_H / 2, '#fcd34d', 30, { speed: 230, life: 0.85, size: 3.2 });
+      g.burst(sx, sy + FLOOR_H / 2, '#ffffff', 10, { speed: 150, life: 0.5, size: 2 });
+      g.floats.push({
+        text: 'PERFECT ×' + g.combo + '  +' + gain,
+        x: sx, y: sy - 24, t: 0, life: 1.1, color: '#fcd34d', size: 17
+      });
+    } else {
+      g.combo = 0;
+      g.audio.sfx('tick');
+      g.audio.tone(96, 0.14, 'triangle', 0.16, { slide: 58 });
+      g.haptic('tick');
+      g.floats.push({ text: '+' + gain, x: nx + nw / 2, y: newY - g.cam - 20, t: 0, life: 0.7, color: '#c4b5fd' });
+      addOverhang(g, dl, dw, newY, left, right);
+      g.burst(left, newY - g.cam + FLOOR_H / 2, '#c4b5fd', 8, { speed: 130, life: 0.5, size: 2.4 });
+      g.burst(right, newY - g.cam + FLOOR_H / 2, '#c4b5fd', 8, { speed: 130, life: 0.5, size: 2.4 });
+    }
+
+    g.floors.push({ x: nx, w: nw, y: newY });
+    if (g.floors.length > 90) g.floors.shift();
+    g.height++;
+    g.nextW = nw;
+    g.addScore(gain);
+    g.shake(perfect ? 3 : 5, 0.18);
+    if (g.floats.length > 6) g.floats.shift();
+
+    g.phase = 'settle';
+    g.settleT = perfect ? 0.12 : 0.2;
+    g.inputLock = 0.3;
+  }
+
+  function addOverhang(g, dl, dw, newY, left, right) {
+    const dropRight = dl + dw;
+    if (left - dl > 1) {
+      addDebris(g, dl, newY, left - dl, FLOOR_H, -1);
+    }
+    if (dropRight - right > 1) {
+      addDebris(g, right, newY, dropRight - right, FLOOR_H, 1);
+    }
+  }
+
+  function addDebris(g, x, y, w, h, dir) {
+    g.debris.push({
+      x, y, w, h,
+      vx: dir * rand(55, 140),
+      vy: rand(-80, -20),
+      rot: 0,
+      vr: dir * rand(1.6, 3.4),
+      life: 2.2,
+      color: PALETTE[randInt(0, PALETTE.length - 1)]
+    });
+    if (g.debris.length > 22) g.debris.shift();
+  }
+
+  function miss(g, dl, dw) {
+    g.phase = 'miss';
+    g.missT = 0.95;
+    g.inputLock = 1;
+    g.audio.sfx('hit');
+    g.haptic('crash');
+    g.shake(13, 0.55);
+    g.flash = 0.4;
+    addDebris(g, dl, g.slab.dropTo, dw, FLOOR_H, g.slab.cx > BASE_X ? 1 : -1);
+    g.floats.push({
+      text: 'MISS', x: g.slab.cx, y: g.slab.dropTo - g.cam - 24,
+      t: 0, life: 0.8, color: '#fb7185', size: 20
+    });
+  }
+
+  /* ------------------------------------------------------------------ */
+
+  function drawSky(g, ctx) {
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#0b0813');
+    sky.addColorStop(0.45, '#151027');
+    sky.addColorStop(0.8, '#241a3c');
+    sky.addColorStop(1, '#3a2547');
+    ctx.fillStyle = sky;
+    ctx.fillRect(0, 0, W, H);
+
+    // altitude haze
+    const hz = ctx.createRadialGradient(480, 640, 40, 480, 640, 700);
+    hz.addColorStop(0, 'rgba(196,181,253,.14)');
+    hz.addColorStop(1, 'rgba(196,181,253,0)');
+    ctx.fillStyle = hz;
+    ctx.fillRect(0, 0, W, H);
+
+    const alt = Math.min(1, g.height / 26);
+    for (const s of g.stars) {
+      const a = 0.12 + alt * 0.55 + Math.sin(g.time * 1.4 + s.tw) * 0.08;
+      ctx.globalAlpha = clamp(a, 0, 0.85);
+      ctx.fillStyle = s.r > 1.2 ? '#e9e3ff' : '#c9c4e2';
+      ctx.fillRect(s.x, s.y - g.cam * 0.04, s.r, s.r);
+    }
+    ctx.globalAlpha = 1;
+
+    // moon
+    const mx = 796, my = 118 - g.cam * 0.05;
+    if (my < 420) {
+      ctx.save();
+      ctx.shadowColor = 'rgba(226,214,255,.7)';
+      ctx.shadowBlur = 60;
+      const mg = ctx.createRadialGradient(mx - 8, my - 8, 4, mx, my, 42);
+      mg.addColorStop(0, '#fdfbff');
+      mg.addColorStop(0.7, '#e5dcff');
+      mg.addColorStop(1, '#c2b3e8');
+      ctx.fillStyle = mg;
+      ctx.beginPath();
+      ctx.arc(mx, my, 40, 0, TAU);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(160,145,200,.22)';
+      ctx.beginPath(); ctx.arc(mx - 12, my - 6, 7, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(mx + 10, my + 11, 5, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(mx + 4, my - 16, 3.5, 0, TAU); ctx.fill();
+      ctx.restore();
+    }
+
+    // thin cloud bands
+    ctx.save();
+    for (let i = 0; i < 3; i++) {
+      const y = 300 + i * 90 - g.cam * (0.08 + i * 0.03);
+      ctx.fillStyle = 'rgba(196,181,253,' + (0.016 + i * 0.006) + ')';
+      ctx.beginPath();
+      ctx.ellipse(200 + i * 280, y, 220, 18, 0, 0, TAU);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  function drawCity(g, ctx) {
+    drawSkyline(g, ctx, g.cityFar, '#171129', 0.12, false);
+    drawSkyline(g, ctx, g.cityNear, '#211835', 0.28, true);
+  }
+
+  function drawSkyline(g, ctx, list, color, parallax, windows) {
+    const shift = -g.cam * parallax;
+    const bottom = H + 40 + shift;
+    ctx.save();
+    ctx.fillStyle = color;
+    for (const b of list) {
+      const top = bottom - b.h;
+      ctx.fillRect(b.x, top, b.w, b.h);
+      // rooftop notch
+      ctx.fillRect(b.x + b.w * 0.3, top - 8, b.w * 0.18, 8);
+      if (windows) {
+        ctx.fillStyle = 'rgba(226,214,255,.16)';
+        const cols = Math.max(1, Math.floor(b.w / 16));
+        const rows = Math.max(1, Math.floor(b.h / 26));
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            if ((r * 3 + c * 7 + b.seed) % 5 === 0) {
+              ctx.fillRect(b.x + 8 + c * 15, top + 12 + r * 24, 4, 7);
+            }
+          }
+        }
+        ctx.fillStyle = color;
+      }
+    }
+    ctx.restore();
+  }
+
+  function drawGround(g, ctx) {
+    const gy = GROUND_Y - g.cam;
+    if (gy > H + 120) return;
+
+    // base plinth
+    const pg = ctx.createLinearGradient(0, gy - 10, 0, gy + 30);
+    pg.addColorStop(0, '#3a2d52');
+    pg.addColorStop(1, '#181125');
+    g.roundRect(330, gy - 8, 300, 24, 8, pg);
+    g.roundRect(330, gy - 8, 300, 3, 1.5, 'rgba(226,214,255,.18)');
+
+    // ground
+    const grd = ctx.createLinearGradient(0, gy, 0, gy + 120);
+    grd.addColorStop(0, '#2a1f3e');
+    grd.addColorStop(1, '#0e0a16');
+    ctx.fillStyle = grd;
+    ctx.fillRect(0, gy + 12, W, 180);
+
+    ctx.fillStyle = 'rgba(196,181,253,.16)';
+    ctx.fillRect(0, gy + 12, W, 1.5);
+
+    const glow = ctx.createRadialGradient(480, gy + 12, 10, 480, gy + 12, 280);
+    glow.addColorStop(0, 'rgba(196,181,253,.14)');
+    glow.addColorStop(1, 'rgba(196,181,253,0)');
+    ctx.fillStyle = glow;
+    ctx.fillRect(200, gy - 40, 560, 120);
+  }
+
+  function drawGuide(g, ctx) {
+    const top = g.floors[g.floors.length - 1];
+    const cx = top.x + top.w / 2;
+    const sy = top.y - g.cam;
+
+    ctx.save();
+    // perfect zone band
+    ctx.fillStyle = 'rgba(252,211,77,.055)';
+    ctx.fillRect(cx - PERFECT, sy - FLOOR_H - HOVER_GAP - 10, PERFECT * 2, FLOOR_H + HOVER_GAP + 10);
+    ctx.setLineDash([5, 7]);
+    ctx.lineDashOffset = -g.time * 26;
+    ctx.strokeStyle = 'rgba(252,211,77,.25)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, sy - FLOOR_H - HOVER_GAP - 8);
+    ctx.lineTo(cx, sy);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawSlab(g, ctx) {
+    const s = g.slab;
+    const pair = PALETTE[g.floors.length % PALETTE.length];
+
+    if (g.phase === 'swing') {
+      // ghost trail
+      for (let k = 3; k >= 1; k--) {
+        const t = g.swingT - k * 0.045;
+        let gx = BASE_X + Math.sin(t) * SWING_AMP;
+        gx = clamp(gx, 82 + s.w / 2, 878 - s.w / 2);
+        ctx.save();
+        ctx.globalAlpha = 0.05 * (4 - k);
+        drawBlock(ctx, gx - s.w / 2, s.y - g.cam, s.w, FLOOR_H, pair);
+        ctx.restore();
+      }
+    }
+
+    const sy = s.y - g.cam;
+    ctx.save();
+    const glow = g.phase === 'swing' ? 0.55 : 0.8;
+    blurShadow(ctx, 'rgba(196,181,253,' + glow + ')', 26, 0);
+    drawBlock(ctx, s.left, sy, s.w, FLOOR_H, pair);
+    ctx.restore();
+
+    // glossy top edge
+    g.roundRect(s.left + 3, sy + 3, Math.max(0, s.w - 6), 3, 1.5, 'rgba(255,255,255,.5)');
+
+    if (g.phase === 'swing') {
+      const top = g.floors[g.floors.length - 1];
+      const dist = Math.abs((s.left + s.w / 2) - (top.x + top.w / 2));
+      if (dist <= PERFECT) {
+        ctx.save();
+        ctx.globalAlpha = 0.5 + Math.sin(g.time * 12) * 0.25;
+        ctx.strokeStyle = '#fcd34d';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(s.left - 2, sy - 2, s.w + 4, FLOOR_H + 4, 8);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+
+  function drawDebris(g, ctx) {
+    for (const d of g.debris) {
+      const sy = d.y - g.cam;
+      if (sy < -120 || sy > H + 160) continue;
+      const w = d.w, h = d.h;
+      ctx.save();
+      ctx.translate(d.x + w / 2, sy + h / 2);
+      ctx.rotate(d.rot);
+      ctx.globalAlpha = clamp(d.life / 1.2, 0, 1);
+      drawBlock(ctx, -w / 2, -h / 2, w, h, d.color);
+      ctx.restore();
+    }
+  }
+
+  function drawHud(g, ctx) {
+    g.text('FLOOR', 64, 34, { size: 9, color: 'rgba(196,181,253,.55)', font: MONO });
+    g.text(String(g.height), 64, 84, {
+      size: 46, color: '#f1ecff', font: MONO, weight: 700,
+      glow: 'rgba(196,181,253,.35)', blur: 20
+    });
+
+    g.text('PERFECT STREAK', W - 64, 34, {
+      size: 9, color: 'rgba(196,181,253,.55)', font: MONO, align: 'right'
+    });
+    g.text('×' + g.combo, W - 64, 72, {
+      size: 32, color: g.combo > 0 ? '#fcd34d' : 'rgba(196,181,253,.24)',
+      font: MONO, weight: 700, align: 'right',
+      glow: g.combo > 0 ? 'rgba(252,211,77,.5)' : null, blur: 16
+    });
+    if (g.bestCombo > 0) {
+      g.text('BEST ×' + g.bestCombo, W - 64, 94, {
+        size: 8, color: 'rgba(196,181,253,.32)', font: MONO, align: 'right'
+      });
+    }
+
+    // height meter
+    const mx = 906, my = 152, mh = 346;
+    g.roundRect(mx - 2, my - 8, 12, mh + 16, 6, 'rgba(196,181,253,.05)', 'rgba(196,181,253,.10)', 1);
+    const p = clamp(g.height / 40, 0, 1);
+    if (p > 0) {
+      const grd = ctx.createLinearGradient(0, my + mh, 0, my);
+      grd.addColorStop(0, '#8b7ac9');
+      grd.addColorStop(1, '#f3eeff');
+      g.roundRect(mx + 1, my + mh * (1 - p), 6, mh * p, 3, grd);
+    }
+    for (let i = 1; i < 4; i++) {
+      const yy = my + mh - mh * (i * 10 / 40);
+      g.text(String(i * 10), mx - 8, yy + 3, {
+        size: 8, color: 'rgba(196,181,253,.35)', font: MONO, align: 'right'
+      });
+      ctx.fillStyle = 'rgba(196,181,253,.18)';
+      ctx.fillRect(mx + 1, yy, 6, 1);
+    }
+    g.text('ALT', mx + 4, my - 18, {
+      size: 8, color: 'rgba(196,181,253,.45)', font: MONO, align: 'center'
+    });
+    g.text(String(g.height), mx + 4, my + mh + 26, {
+      size: 11, color: 'rgba(241,236,255,.65)', font: MONO, align: 'center', weight: 600
+    });
+  }
+})();
+</script>
+</body>
+</html>

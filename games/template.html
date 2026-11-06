@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>__TITLE__ · WristLab Arcade</title>
+</head>
+<body>
+  <!-- The engine injects all CSS, HUD, overlays and the watch bridge. -->
+  <script src="./engine.js"></script>
+  <script>
+    WristGame.mount({
+      id: '__ID__',
+      title: '__TITLE__',
+      tagline: '__TAGLINE__',
+      category: '__CATEGORY__',
+      accent: '__ACCENT__',
+      bg: '#08090b',
+      controls: [
+        { keys: '← →', label: 'MOVE' },
+        { keys: 'SPACE', label: 'ACTION' }
+      ],
+      tips: [
+        'Watch buttons and keyboard both work.',
+        'The engine auto-saves your best score.'
+      ],
+
+      // Called on load and every restart. Initialise all mutable state here.
+      init(g) {
+        g.score = 0;
+      },
+
+      // Called every animation frame while running. dt is seconds.
+      update(g, dt) {
+        // ...game logic...
+      },
+
+      // Draw in logical 960 x 600 coordinates.
+      draw(g) {
+        g.clear('#08090b');
+        g.text('Hello, wrist.', 480, 300, { size: 42, align: 'center', color: '#f4f1e8', glow: g.def.accent });
+      },
+
+      // action: 'left' | 'right' | 'up' | 'down' | 'action'
+      onAction(g, action, down) {
+        if (down) g.audio.sfx('blip');
+      },
+
+      // Optional pointer support: type is 'down' | 'move' | 'drag' | 'up'
+      onPointer(g, x, y, type) {
+      },
+
+      onStart(g) {
+        g.audio.startMusic({ root: 196, bpm: 108, scale: [0, 3, 5, 7, 10] });
+      }
+    });
+  </script>
+</body>
+</html>

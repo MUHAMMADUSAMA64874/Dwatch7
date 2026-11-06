@@ -1,0 +1,10 @@
+const fs = require('fs');
+const p = 'assets/app.css';
+let css = fs.readFileSync(p, 'utf8');
+const before = css;
+css = css.replace(/rgba\(201, 245, 107,/g, 'rgba(var(--accent-rgb),');
+css = css.replace(/rgba\(201,245,107,/g, 'rgba(var(--accent-rgb),');
+css = css.replace(/#c9f56b/g, 'var(--accent)');
+fs.writeFileSync(p, css);
+console.log('changed', before !== css);
+console.log('remaining lime literals', (css.match(/201, ?245, ?107|#c9f56b/g) || []).length);

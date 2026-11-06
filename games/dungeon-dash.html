@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Dungeon Dash · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+  const COLS = 15, ROWS = 10, TILE = 52, OX = 90, OY = 45;
+  const U = window.WGUtil;
+
+  function makeFloor(floor, g) {
+    const map = [];
+    for (let y = 0; y < ROWS; y++) {
+      map[y] = [];
+      for (let x = 0; x < COLS; x++) {
+        const border = x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1;
+        map[y][x] = border ? '#' : '.';
+      }
+    }
+    // scatter walls
+    const walls = 18 + Math.min(14, floor * 2);
+    for (let i = 0; i < walls; i++) {
+      const x = U.randInt(2, COLS - 3), y = U.randInt(2, ROWS - 3);
+      if ((x < 4 && y < 4) || (x > COLS - 5 && y > ROWS - 5)) continue;
+      map[y][x] = '#';
+    }
+    // carve a few paths to keep it playable
+    for (let y = 2; y < ROWS - 2; y++) if (Math.random() < 0.35) map[y][U.randInt(2, COLS - 3)] = '.';
+    for (let x = 2; x < COLS - 2; x++) if (Math.random() < 0.35) map[U.randInt(2, ROWS - 3)][x] = '.';
+
+    function free() {
+      for (let t = 0; t < 400; t++) {
+        const x = U.randInt(1, COLS - 2), y = U.randInt(1, ROWS - 2);
+        if (map[y][x] === '.') return { x, y };
+      }
+      return { x: 1, y: 1 };
+    }
+    const player = { x: 1, y: 1 }; map[1][1] = '.';
+    const exit = { x: COLS - 2, y: ROWS - 2 }; map[ROWS - 2][COLS - 2] = '.';
+    // ensure a rough corridor
+    let cx = 1, cy = 1;
+    while (cx < exit.x || cy < exit.y) {
+      map[cy][cx] = '.';
+      if (cx < exit.x && (cy >= exit.y || Math.random() < 0.55)) cx++; else if (cy < exit.y) cy++;
+    }
+    const enemies = [];
+    const eCount = 2 + Math.min(4, Math.floor(floor * 0.8));
+    for (let i = 0; i < eCount; i++) {
+      const p = free();
+      if (U.dist(p.x, p.y, player.x, player.y) < 4) { i--; continue; }
+      enemies.push({ x: p.x, y: p.y, hp: 1 + (floor > 3 ? 1 : 0), kind: Math.random() < 0.3 ? 'brute' : 'skulk', cd: 0 });
+    }
+    const loot = [];
+    const lCount = U.randInt(2, 4);
+    for (let i = 0; i < lCount; i++) {
+      const p = free();
+      if ((p.x === exit.x && p.y === exit.y) || enemies.some(e => e.x === p.x && e.y === p.y)) { i--; continue; }
+      loot.push({ x: p.x, y: p.y, kind: Math.random() < 0.18 ? 'heart' : Math.random() < 0.45 ? 'coin' : 'relic' });
+    }
+    return { map, player, exit, enemies, loot, floor };
+  }
+
+  function tilePx(x, y) { return { x: OX + x * TILE + TILE / 2, y: OY + y * TILE + TILE / 2 }; }
+  function walkable(g, x, y) {
+    if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return false;
+    return g.map[y][x] !== '#' && !g.enemies.some(e => e.hp > 0 && e.x === x && e.y === y);
+  }
+
+  WristGame.mount({
+    id: 'dungeon-dash',
+    title: 'Dungeon Dash',
+    tagline: 'One more room. One more run.',
+    category: 'Action',
+    accent: '#e879f9',
+    bg: '#0a0810',
+    controls: [
+      { keys: '← → ↑ ↓', label: 'MOVE' },
+      { keys: 'SPACE', label: 'STRIKE' },
+      { keys: 'WATCH', label: 'LEFT / RIGHT' }
+    ],
+    tips: [
+      'Bump enemies to strike. Clear the room, grab the relic, then reach the stairs.',
+      'Hearts restore HP. Coins boost score. Each floor gets meaner.'
+    ],
+
+    init(g) {
+      g.score = 0;
+      g.hp = 3; g.maxHp = 3;
+      g.floor = 1;
+      g.turn = 0;
+      g.flash = 0;
+      g.msg = 'FLOOR 1';
+      g.msgT = 1.2;
+      g.lastDir = { x: 1, y: 0 };
+      loadFloor(g, 1);
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 110, bpm: 96, scale: [0, 3, 5, 7, 10], wave: 'triangle', gain: 0.04 });
+      g.msg = 'CLEAR THE ROOM';
+      g.msgT = 1.4;
+    },
+
+    onAction(g, action, down) {
+      if (!down || g.busy) return;
+      let dx = 0, dy = 0;
+      if (action === 'left') dx = -1;
+      else if (action === 'right') dx = 1;
+      else if (action === 'up') dy = -1;
+      else if (action === 'down') dy = 1;
+      else if (action === 'action') { dx = g.lastDir.x; dy = g.lastDir.y; }
+      if (!dx && !dy) return;
+      g.lastDir = { x: dx, y: dy };
+      playerTurn(g, dx, dy);
+    },
+
+    update(g, dt) {
+      if (g.flash > 0) g.flash -= dt;
+      if (g.msgT > 0) g.msgT -= dt;
+      // gentle enemy bob handled in draw
+      if (g.pendingEnemy && g.pendingEnemy > 0) {
+        g.pendingEnemy -= dt;
+        if (g.pendingEnemy <= 0) { g.pendingEnemy = 0; enemyTurn(g); }
+      }
+    },
+
+    draw(g, ctx) {
+      g.clear('#0a0810');
+      const bg = ctx.createRadialGradient(480, 300, 40, 480, 300, 620);
+      bg.addColorStop(0, 'rgba(72,20,86,.22)');
+      bg.addColorStop(1, 'rgba(4,4,8,0)');
+      ctx.fillStyle = bg; ctx.fillRect(0, 0, 960, 600);
+
+      // tiles
+      for (let y = 0; y < ROWS; y++) {
+        for (let x = 0; x < COLS; x++) {
+          const px = OX + x * TILE, py = OY + y * TILE;
+          const wall = g.map[y][x] === '#';
+          if (wall) {
+            g.roundRect(px + 1, py + 1, TILE - 2, TILE - 2, 6, '#171324', 'rgba(232,121,249,.08)', 1);
+            ctx.fillStyle = 'rgba(232,121,249,.03)';
+            ctx.fillRect(px + 4, py + 4, TILE - 8, 4);
+          } else {
+            const alt = (x + y) % 2 ? 'rgba(255,255,255,.018)' : 'rgba(255,255,255,.008)';
+            g.roundRect(px + 1, py + 1, TILE - 2, TILE - 2, 5, alt);
+          }
+        }
+      }
+      // exit
+      const ex = tilePx(g.exit.x, g.exit.y);
+      const open = g.enemies.every(e => e.hp <= 0);
+      const ePulse = 1 + Math.sin(g.time * 4) * 0.12;
+      ctx.save();
+      ctx.shadowColor = open ? '#e879f9' : '#4b5563'; ctx.shadowBlur = open ? 22 : 0;
+      g.roundRect(ex.x - 16 * ePulse, ex.y - 16 * ePulse, 32 * ePulse, 32 * ePulse, 8, open ? 'rgba(232,121,249,.22)' : 'rgba(75,85,99,.18)', open ? '#e879f9' : '#4b5563', 1.5);
+      ctx.restore();
+      g.text('▼', ex.x, ex.y + 6, { align: 'center', size: 18, color: open ? '#f5d0fe' : '#6b7280', font: "'IBM Plex Mono',monospace" });
+
+      // loot
+      g.loot.forEach(l => {
+        if (l.taken) return;
+        const p = tilePx(l.x, l.y);
+        const bob = Math.sin(g.time * 3 + l.x + l.y) * 2;
+        if (l.kind === 'heart') {
+          g.glow(p.x, p.y + bob, 5, '#fb7185', 14); g.text('♥', p.x, p.y + 5 + bob, { align: 'center', size: 18, color: '#fb7185' });
+        } else if (l.kind === 'coin') {
+          g.glow(p.x, p.y + bob, 5, '#fbbf24', 14); g.text('●', p.x, p.y + 6 + bob, { align: 'center', size: 16, color: '#fbbf24' });
+        } else {
+          g.glow(p.x, p.y + bob, 5, '#a78bfa', 14); g.text('◆', p.x, p.y + 6 + bob, { align: 'center', size: 15, color: '#c4b5fd' });
+        }
+      });
+
+      // enemies
+      g.enemies.forEach(e => {
+        if (e.hp <= 0) return;
+        const p = tilePx(e.x, e.y);
+        const bob = Math.sin(g.time * 2.4 + e.x * 2) * 1.5;
+        const col = e.kind === 'brute' ? '#f87171' : '#fb923c';
+        ctx.save();
+        ctx.shadowColor = col; ctx.shadowBlur = 16;
+        g.roundRect(p.x - 15, p.y - 15 + bob, 30, 30, 8, 'rgba(20,12,18,.9)', col, 1.5);
+        ctx.restore();
+        g.text(e.kind === 'brute' ? 'B' : 'S', p.x, p.y + 6 + bob, { align: 'center', size: 14, color: col, font: "'IBM Plex Mono',monospace", weight: 600 });
+        if (e.hp > 1) g.text('♥' + e.hp, p.x, p.y - 20 + bob, { align: 'center', size: 9, color: '#fecaca', font: "'IBM Plex Mono',monospace" });
+      });
+
+      // player
+      const pp = tilePx(g.player.x, g.player.y);
+      ctx.save();
+      ctx.shadowColor = '#e879f9'; ctx.shadowBlur = 22;
+      g.circle(pp.x, pp.y, 14, '#1a1022', '#e879f9', 2);
+      g.circle(pp.x, pp.y, 8, '#e879f9');
+      ctx.restore();
+      // direction nub
+      g.circle(pp.x + g.lastDir.x * 8, pp.y + g.lastDir.y * 8, 2.5, '#fff');
+
+      // flash
+      if (g.flash > 0) {
+        ctx.fillStyle = 'rgba(248,113,113,' + (g.flash * 0.35) + ')';
+        ctx.fillRect(0, 0, 960, 600);
+      }
+
+      // HUD
+      g.text('HP  ' + '♥'.repeat(g.hp) + '·'.repeat(Math.max(0, g.maxHp - g.hp)), OX, OY + ROWS * TILE + 30, { size: 11, color: '#fda4af', font: "'IBM Plex Mono',monospace" });
+      g.text('FLOOR ' + g.floor, 480, OY + ROWS * TILE + 30, { size: 11, color: '#c4b5fd', align: 'center', font: "'IBM Plex Mono',monospace" });
+      g.text('SCORE ' + Math.round(g.score), 960 - OX, OY + ROWS * TILE + 30, { size: 11, color: '#f4f1e8', align: 'right', font: "'IBM Plex Mono',monospace" });
+      if (g.msgT > 0) {
+        ctx.globalAlpha = U.clamp(g.msgT, 0, 1);
+        g.text(g.msg, 480, 32, { size: 13, color: '#f5d0fe', align: 'center', font: "'IBM Plex Mono',monospace", glow: '#e879f9' });
+        ctx.globalAlpha = 1;
+      }
+    }
+  });
+
+  function loadFloor(g, floor) {
+    const f = makeFloor(floor, g);
+    g.map = f.map; g.player = f.player; g.exit = f.exit; g.enemies = f.enemies; g.loot = f.loot; g.floor = floor;
+  }
+
+  function playerTurn(g, dx, dy) {
+    const nx = g.player.x + dx, ny = g.player.y + dy;
+    const enemy = g.enemies.find(e => e.hp > 0 && e.x === nx && e.y === ny);
+    if (enemy) {
+      enemy.hp--;
+      const p = tilePx(enemy.x, enemy.y);
+      g.burst(p.x, p.y, '#f87171', 14, { speed: 180, life: 0.5, size: 3 });
+      g.shake(4, 0.12); g.haptic('hit'); g.audio.sfx('hit');
+      g.score += 15;
+      if (enemy.hp <= 0) {
+        g.burst(p.x, p.y, '#fbbf24', 18, { speed: 220, life: 0.7, size: 3 });
+        g.audio.sfx('coin'); g.score += 25;
+        g.msg = 'DOWN'; g.msgT = 0.6;
+      }
+    } else if (walkable(g, nx, ny)) {
+      g.player.x = nx; g.player.y = ny;
+      g.audio.sfx('tick');
+      // pickup
+      const loot = g.loot.find(l => !l.taken && l.x === nx && l.y === ny);
+      if (loot) {
+        loot.taken = true;
+        const p = tilePx(nx, ny);
+        if (loot.kind === 'heart') {
+          g.hp = Math.min(g.maxHp, g.hp + 1); g.msg = '+1 HP'; g.audio.sfx('power'); g.haptic('coin');
+          g.burst(p.x, p.y, '#fb7185', 14, { speed: 140 });
+        } else if (loot.kind === 'coin') {
+          g.score += 40; g.msg = '+40'; g.audio.sfx('coin'); g.haptic('tick');
+          g.burst(p.x, p.y, '#fbbf24', 14, { speed: 140 });
+        } else {
+          g.score += 80; g.msg = 'RELIC +80'; g.audio.sfx('coin'); g.haptic('coin');
+          g.burst(p.x, p.y, '#c4b5fd', 16, { speed: 160 });
+        }
+        g.msgT = 0.8;
+      }
+      // exit
+      if (nx === g.exit.x && ny === g.exit.y && g.enemies.every(e => e.hp <= 0)) {
+        g.floor++;
+        g.score += 100;
+        loadFloor(g, g.floor);
+        g.audio.sfx('win'); g.haptic('start');
+        g.msg = 'FLOOR ' + g.floor; g.msgT = 1.4;
+        g.setScore(g.score);
+        return;
+      }
+    } else {
+      g.audio.sfx('buzzer');
+    }
+    g.setScore(g.score);
+    // enemies respond after a short beat
+    if (g.enemies.some(e => e.hp > 0)) g.pendingEnemy = 0.09;
+  }
+
+  function enemyTurn(g) {
+    const dirs = [[1,0],[-1,0],[0,1],[0,-1]];
+    g.enemies.forEach(e => {
+      if (e.hp <= 0) return;
+      const dx = g.player.x - e.x, dy = g.player.y - e.y;
+      const adx = Math.abs(dx), ady = Math.abs(dy);
+      if (adx + ady === 1) {
+        // attack
+        g.hp--;
+        g.flash = 0.35; g.shake(8, 0.25); g.haptic('crash'); g.audio.sfx('hit');
+        g.msg = 'HIT!'; g.msgT = 0.6;
+        if (g.hp <= 0) {
+          const p = tilePx(g.player.x, g.player.y);
+          g.burst(p.x, p.y, '#f87171', 30, { speed: 240, life: 0.9, size: 4 });
+          g.over('Floor ' + g.floor + ' · Score ' + Math.round(g.score));
+        }
+        return;
+      }
+      // move toward player (simple)
+      let opts = [];
+      if (adx >= ady) { if (dx) opts.push([Math.sign(dx), 0]); if (dy) opts.push([0, Math.sign(dy)]); }
+      else { if (dy) opts.push([0, Math.sign(dy)]); if (dx) opts.push([Math.sign(dx), 0]); }
+      opts = opts.concat(dirs.filter(d => !opts.some(o => o[0]===d[0]&&o[1]===d[1])));
+      if (Math.random() < 0.12) opts = dirs.slice().sort(() => Math.random() - 0.5);
+      for (const d of opts) {
+        const nx = e.x + d[0], ny = e.y + d[1];
+        if (nx === g.player.x && ny === g.player.y) continue;
+        if (nx < 0 || ny < 0 || nx >= COLS || ny >= ROWS) continue;
+        if (g.map[ny][nx] === '#') continue;
+        if (g.enemies.some(o => o !== e && o.hp > 0 && o.x === nx && o.y === ny)) continue;
+        e.x = nx; e.y = ny; break;
+      }
+    });
+  }
+})();
+</script>
+</body>
+</html>

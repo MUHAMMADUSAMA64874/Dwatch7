@@ -1,0 +1,728 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Tank Duel · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const W = 960, H = 600;
+  const MONO = "'IBM Plex Mono',monospace";
+  const STEP = 6;
+  const GRAV = 380;
+  const PLAYER_X = 150, AI_X = 810;
+  const TAU = Math.PI * 2;
+
+  function installHelpers(g) {
+    if (typeof g.clamp !== 'function') g.clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+    if (typeof g.lerp !== 'function') g.lerp = (a, b, t) => a + (b - a) * t;
+    if (typeof g.rand !== 'function') g.rand = (a = 0, b = 1) => a + Math.random() * (b - a);
+    if (typeof g.randInt !== 'function') g.randInt = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+    if (typeof g.pick !== 'function') g.pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    if (typeof g.dist !== 'function') g.dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+    if (typeof g.angle !== 'function') g.angle = (x1, y1, x2, y2) => Math.atan2(y2 - y1, x2 - x1);
+  }
+
+  function makeTerrain(g) {
+    const n = Math.ceil(W / STEP) + 1;
+    const arr = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const x = i * STEP;
+      arr[i] = 432
+        + 27 * Math.sin(x * 0.0052 + 0.8)
+        + 14 * Math.sin(x * 0.011 + 2.1)
+        + 7 * Math.sin(x * 0.021 + 4.2)
+        + 4 * Math.sin(x * 0.045 + 1.1);
+    }
+    const pads = [PLAYER_X, AI_X];
+    for (let p = 0; p < pads.length; p++) {
+      const px = pads[p];
+      const idx = Math.round(px / STEP);
+      const target = arr[idx];
+      for (let i = 0; i < n; i++) {
+        const d = Math.abs(i * STEP - px);
+        if (d < 98) {
+          const k = 1 - d / 98;
+          const s = k * k * (3 - 2 * k);
+          arr[i] = arr[i] * (1 - s) + target * s;
+        }
+      }
+    }
+    g.terrain = arr;
+  }
+
+  function terrainAt(g, x) {
+    const arr = g.terrain;
+    const fx = x / STEP;
+    let i = Math.floor(fx);
+    if (i < 0) return arr[0];
+    if (i >= arr.length - 1) return arr[arr.length - 1];
+    const f = fx - i;
+    return arr[i] + (arr[i + 1] - arr[i]) * f;
+  }
+
+  function deform(g, x, radius, depth) {
+    const arr = g.terrain;
+    const i0 = Math.max(0, Math.floor((x - radius) / STEP));
+    const i1 = Math.min(arr.length - 1, Math.ceil((x + radius) / STEP));
+    for (let i = i0; i <= i1; i++) {
+      const d = Math.abs(i * STEP - x);
+      const k = 1 - d / radius;
+      if (k <= 0) continue;
+      arr[i] = Math.min(556, arr[i] + depth * k * k * (3 - 2 * k));
+    }
+  }
+
+  function makeWind(g) {
+    let v = g.rand(-72, 72);
+    if (Math.abs(v) < 9) v *= 2.4;
+    return g.clamp(v, -78, 78);
+  }
+
+  function simulateLanding(g, x0, y0, angleDeg, power, left) {
+    const rad = angleDeg * Math.PI / 180;
+    const dir = left ? -1 : 1;
+    const speed = power * 8.2;
+    let x = x0, y = y0;
+    let vx = Math.cos(rad) * speed * dir;
+    let vy = -Math.sin(rad) * speed;
+    const h = 1 / 60;
+    for (let i = 0; i < 480; i++) {
+      vx += g.wind * h;
+      vy += GRAV * h;
+      x += vx * h;
+      y += vy * h;
+      if (y >= terrainAt(g, x)) return x;
+      if (x < -40 || x > W + 40) return x;
+    }
+    return x;
+  }
+
+  function previewPath(g) {
+    const p = g.player;
+    const rad = p.angle * Math.PI / 180;
+    const speed = p.power * 8.2;
+    const tip = barrelTip(p, 1);
+    let x = tip.x, y = tip.y;
+    let vx = Math.cos(rad) * speed;
+    let vy = -Math.sin(rad) * speed;
+    const pts = [];
+    const h = 1 / 60;
+    for (let i = 0; i < 68; i++) {
+      vx += g.wind * h;
+      vy += GRAV * h;
+      x += vx * h;
+      y += vy * h;
+      if (i % 3 === 0) pts.push({ x: x, y: y });
+      if (y >= terrainAt(g, x) || x < 0 || x > W) break;
+    }
+    return pts;
+  }
+
+  function barrelTip(t, dir) {
+    const rad = t.angle * Math.PI / 180;
+    return {
+      x: t.x + Math.cos(rad) * 46 * dir,
+      y: t.y - 44 - Math.sin(rad) * 46
+    };
+  }
+
+  function computeAiPlan(g) {
+    const errA = Math.max(1.0, 7.2 - g.round * 0.78);
+    const errP = Math.max(2.0, 13 - g.round * 1.35);
+    let angle = 45 + g.rand(-errA, errA * 0.55);
+    angle = g.clamp(angle, 12, 78);
+
+    const tip = barrelTip(g.ai, -1);
+    let lo = 10, hi = 100;
+    for (let i = 0; i < 16; i++) {
+      const mid = (lo + hi) / 2;
+      const land = simulateLanding(g, tip.x, tip.y, angle, mid, true);
+      if (land < g.player.x) lo = mid;
+      else hi = mid;
+    }
+    let power = (lo + hi) / 2 + g.rand(-errP, errP);
+    power = g.clamp(power, 10, 100);
+
+    g.aiPlan = { angle: angle, power: power };
+  }
+
+  function fire(g, who) {
+    if (g.projectile || g.finished) return;
+    const tank = who === 'player' ? g.player : g.ai;
+    const dir = who === 'player' ? 1 : -1;
+    const rad = tank.angle * Math.PI / 180;
+    const tip = barrelTip(tank, dir);
+    const speed = tank.power * 8.2;
+    g.projectile = {
+      x: tip.x, y: tip.y,
+      vx: Math.cos(rad) * speed * dir,
+      vy: -Math.sin(rad) * speed,
+      owner: who, trail: []
+    };
+    g.phase = 'flying';
+    g.muzzle = 0.18;
+    g.muzzlePos = { x: tip.x, y: tip.y };
+    g.audio.tone(95, 0.32, 'sawtooth', 0.16, { slide: 48 });
+    g.audio.noise(0.28, 0.22, 900, { sweep: 140 });
+    g.shake(6, 0.22);
+    g.haptic('nitro');
+    if (who === 'ai') g.aiBarrelFlash = 0.4;
+  }
+
+  function explodeAt(g, x, y, owner, direct) {
+    const target = owner === 'player' ? g.ai : g.player;
+    const tx = target.x, ty = target.y - 26;
+    const d = Math.hypot(x - tx, y - ty);
+    const directDmg = owner === 'player' ? 40 : 30;
+    const splashDmg = owner === 'player' ? 26 : 22;
+    let dmg = 0;
+    if (direct) dmg = directDmg;
+    else if (d < 38) dmg = Math.round(splashDmg * 0.92);
+    else if (d < 118) dmg = Math.round(splashDmg * Math.pow(1 - (d - 38) / 80, 1.25));
+
+    if (dmg > 0) {
+      target.hp = Math.max(0, target.hp - dmg);
+      target.flash = 0.55;
+      g.pops.push({
+        x: target.x, y: target.y - 74, text: '-' + dmg,
+        color: owner === 'player' ? '#fca5a5' : '#f87171', t: 0, life: 1.0
+      });
+      if (owner === 'player') {
+        g.addScore(dmg * 8);
+        g.haptic('hit');
+      } else {
+        g.haptic('hit');
+      }
+    }
+
+    const hitGround = y >= terrainAt(g, x) - 2;
+    if (hitGround) {
+      deform(g, x, 48, 20);
+      g.scorches.push({ x: x, y: terrainAt(g, x), r: g.rand(30, 42), a: g.rand(0, TAU) });
+      if (g.scorches.length > 22) g.scorches.shift();
+    }
+
+    g.player.y = terrainAt(g, g.player.x);
+    g.ai.y = terrainAt(g, g.ai.x);
+
+    g.burst(x, y, '#ffb457', 38, { speed: 380, life: 0.95, size: 5, gravity: 120 });
+    g.burst(x, y, '#f87171', 26, { speed: 300, life: 0.8, size: 4, gravity: 160 });
+    g.burst(x, y, '#fff1d6', 12, { speed: 220, life: 0.55, size: 3, gravity: 60 });
+    g.shake(13, 0.42);
+    g.audio.sfx('explode');
+    g.haptic('crash');
+  }
+
+  function endShot(g) {
+    g.projectile = null;
+    g.phase = 'settle';
+    g.settleT = 1.05;
+  }
+
+  function finish(g, win) {
+    if (g.finished) return;
+    g.finished = true;
+    if (win) {
+      g.addScore(400 + Math.round(g.player.hp) * 3);
+      g.audio.sfx('win');
+      g.over('Enemy destroyed · ' + Math.max(0, Math.ceil(g.ai.hp)) + ' HP left · round ' + g.round);
+    } else {
+      g.over('Your tank was destroyed · round ' + g.round);
+    }
+  }
+
+  WristGame.mount({
+    id: 'tank-duel',
+    title: 'Tank Duel',
+    tagline: 'One shot. One bounce.',
+    category: 'Strategy',
+    accent: '#f87171',
+    bg: '#100505',
+    controls: [
+      { keys: '← →', label: 'AIM' },
+      { keys: '↑ ↓', label: 'POWER' },
+      { keys: 'SPACE', label: 'FIRE' },
+      { keys: 'WATCH', label: 'LEFT / RIGHT' }
+    ],
+    tips: [
+      'Wind pushes every shell. Read the flag before you commit.',
+      'The enemy computer sharpens its aim every round — end it quickly.',
+      'Tap the FIRE button or press Space. Arrows fine-tune the arc.'
+    ],
+
+    init(g) {
+      installHelpers(g);
+      g.score = 0;
+      g.round = 1;
+      g.wind = makeWind(g);
+      makeTerrain(g);
+      g.player = { x: PLAYER_X, y: 0, hp: 100, angle: 45, power: 64, flash: 0 };
+      g.ai = { x: AI_X, y: 0, hp: 100, angle: 45, power: 64, flash: 0 };
+      g.player.y = terrainAt(g, g.player.x);
+      g.ai.y = terrainAt(g, g.ai.x);
+      g.turn = 'player';
+      g.phase = 'aim';
+      g.projectile = null;
+      g.aiPlan = null;
+      g.aiTimer = 0;
+      g.settleT = 0;
+      g.muzzle = 0;
+      g.muzzlePos = null;
+      g.aiBarrelFlash = 0;
+      g.scorches = [];
+      g.pops = [];
+      g.finished = false;
+      g._aimSound = 0;
+      g.audio.stopMusic();
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 98, bpm: 92, scale: [0, 3, 5, 6, 10], wave: 'sawtooth', gain: 0.028 });
+    },
+
+    onAction(g, action, down) {
+      if (!down || g.finished) return;
+      if (g.phase === 'aim' && g.turn === 'player') {
+        if (action === 'left') {
+          g.player.angle = g.clamp(g.player.angle + 2, 8, 82);
+          g.audio.tone(320, 0.03, 'square', 0.05);
+          g.haptic('tick');
+        } else if (action === 'right') {
+          g.player.angle = g.clamp(g.player.angle - 2, 8, 82);
+          g.audio.tone(300, 0.03, 'square', 0.05);
+          g.haptic('tick');
+        } else if (action === 'up') {
+          g.player.power = g.clamp(g.player.power + 2, 10, 100);
+          g.audio.tone(440, 0.03, 'square', 0.045);
+          g.haptic('tick');
+        } else if (action === 'down') {
+          g.player.power = g.clamp(g.player.power - 2, 10, 100);
+          g.audio.tone(400, 0.03, 'square', 0.045);
+          g.haptic('tick');
+        } else if (action === 'action') {
+          fire(g, 'player');
+        }
+      }
+    },
+
+    onPointer(g, x, y, type) {
+      if (type !== 'down' || g.finished) return;
+      if (g.phase === 'aim' && g.turn === 'player' && x > 738 && x < 936 && y > 512 && y < 580) {
+        fire(g, 'player');
+      }
+    },
+
+    update(g, dt) {
+      if (g.finished) return;
+
+      g.player.flash = Math.max(0, g.player.flash - dt);
+      g.ai.flash = Math.max(0, g.ai.flash - dt);
+      g.muzzle = Math.max(0, g.muzzle - dt);
+      g.aiBarrelFlash = Math.max(0, g.aiBarrelFlash - dt);
+
+      for (let i = g.pops.length - 1; i >= 0; i--) {
+        const p = g.pops[i];
+        p.t += dt;
+        p.y -= 26 * dt;
+        if (p.t > p.life) g.pops.splice(i, 1);
+      }
+
+      if (g.phase === 'aim' && g.turn === 'player') {
+        const aSpd = 34, pSpd = 46;
+        let moved = false;
+        if (g.pressed('left')) { g.player.angle += aSpd * dt; moved = true; }
+        if (g.pressed('right')) { g.player.angle -= aSpd * dt; moved = true; }
+        if (g.pressed('up')) { g.player.power += pSpd * dt; moved = true; }
+        if (g.pressed('down')) { g.player.power -= pSpd * dt; moved = true; }
+        g.player.angle = g.clamp(g.player.angle, 8, 82);
+        g.player.power = g.clamp(g.player.power, 10, 100);
+        if (moved) {
+          g._aimSound -= dt;
+          if (g._aimSound <= 0) {
+            g._aimSound = 0.09;
+            g.audio.tone(260, 0.02, 'square', 0.03);
+          }
+        }
+      }
+
+      if (g.phase === 'aiAim') {
+        g.aiTimer -= dt;
+        if (g.aiPlan) {
+          const k = Math.min(1, dt * 5.5);
+          g.ai.angle = g.lerp(g.ai.angle, g.aiPlan.angle, k);
+          g.ai.power = g.lerp(g.ai.power, g.aiPlan.power, k);
+        }
+        if (g.aiTimer <= 0) {
+          if (g.aiPlan) {
+            g.ai.angle = g.aiPlan.angle;
+            g.ai.power = g.aiPlan.power;
+          }
+          fire(g, 'ai');
+        }
+      }
+
+      if (g.phase === 'flying' && g.projectile) {
+        const p = g.projectile;
+        const steps = 6;
+        const h = dt / steps;
+        for (let s = 0; s < steps && g.projectile; s++) {
+          p.vx += g.wind * h;
+          p.vy += GRAV * h;
+          p.x += p.vx * h;
+          p.y += p.vy * h;
+
+          const target = p.owner === 'player' ? g.ai : g.player;
+          if (Math.hypot(p.x - target.x, p.y - (target.y - 26)) < 28) {
+            explodeAt(g, p.x, p.y, p.owner, true);
+            endShot(g);
+            return;
+          }
+
+          if (p.y >= terrainAt(g, p.x)) {
+            explodeAt(g, p.x, terrainAt(g, p.x), p.owner, false);
+            endShot(g);
+            return;
+          }
+          if (p.x < -120 || p.x > W + 120 || p.y > H + 200) {
+            g.audio.sfx('tick');
+            g.pops.push({ x: g.clamp(p.x, 30, W - 30), y: 120, text: 'MISS', color: '#9b6b6f', t: 0, life: 1.1 });
+            endShot(g);
+            return;
+          }
+        }
+        p.trail.push({ x: p.x, y: p.y });
+        if (p.trail.length > 46) p.trail.shift();
+      }
+
+      if (g.phase === 'settle') {
+        g.settleT -= dt;
+        if (g.settleT <= 0) {
+          if (g.ai.hp <= 0) { finish(g, true); return; }
+          if (g.player.hp <= 0) { finish(g, false); return; }
+          if (g.turn === 'player') {
+            g.turn = 'ai';
+            g.phase = 'aiAim';
+            g.aiTimer = 1.25;
+            computeAiPlan(g);
+          } else {
+            g.turn = 'player';
+            g.round++;
+            g.wind = makeWind(g);
+            g.phase = 'aim';
+            g.projectile = null;
+            g.audio.tone(520, 0.07, 'triangle', 0.08);
+          }
+        }
+      }
+    },
+
+    draw(g, ctx) {
+      g.clear('#100505');
+
+      const sky = ctx.createLinearGradient(0, 0, 0, H);
+      sky.addColorStop(0, '#2a0b14');
+      sky.addColorStop(0.42, '#1a0710');
+      sky.addColorStop(1, '#0b0306');
+      ctx.fillStyle = sky; ctx.fillRect(0, 0, W, H);
+
+      // Dusk sun
+      const sunX = 655, sunY = 300;
+      const sg = ctx.createRadialGradient(sunX, sunY, 8, sunX, sunY, 190);
+      sg.addColorStop(0, 'rgba(255,120,90,.55)');
+      sg.addColorStop(0.35, 'rgba(220,70,60,.18)');
+      sg.addColorStop(1, 'rgba(120,30,30,0)');
+      ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H);
+      g.circle(sunX, sunY, 66, 'rgba(255,138,102,.20)');
+      g.circle(sunX, sunY, 46, 'rgba(255,170,120,.16)');
+
+      // Dust haze
+      for (let i = 0; i < 18; i++) {
+        const x = (i * 173 + 40) % W;
+        const y = 100 + ((i * 91) % 250);
+        ctx.globalAlpha = 0.05 + (i % 4) * 0.02;
+        g.circle(x, y, 1.4, '#ffd3b0');
+      }
+      ctx.globalAlpha = 1;
+
+      drawRidge(g, ctx, 368, 30, 'rgba(48,14,24,.55)', 1.4, 0.006);
+      drawRidge(g, ctx, 408, 22, 'rgba(30,9,16,.75)', 3.1, 0.011);
+
+      // Terrain body
+      const arr = g.terrain;
+      const terr = ctx.createLinearGradient(0, 330, 0, H);
+      terr.addColorStop(0, '#3a171d');
+      terr.addColorStop(0.55, '#1b0a0e');
+      terr.addColorStop(1, '#0a0406');
+      ctx.beginPath();
+      ctx.moveTo(0, H);
+      for (let i = 0; i < arr.length; i++) ctx.lineTo(i * STEP, arr[i]);
+      ctx.lineTo(W, H);
+      ctx.closePath();
+      ctx.fillStyle = terr;
+      ctx.fill();
+
+      // Crater scorches
+      for (let i = 0; i < g.scorches.length; i++) {
+        const s = g.scorches[i];
+        ctx.save();
+        ctx.translate(s.x, s.y + 1);
+        ctx.rotate(s.a);
+        ctx.fillStyle = 'rgba(5,2,3,.55)';
+        ctx.beginPath(); ctx.ellipse(0, 0, s.r, s.r * 0.32, 0, 0, TAU); ctx.fill();
+        ctx.strokeStyle = 'rgba(255,120,90,.16)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.ellipse(0, -1, s.r * 0.9, s.r * 0.26, 0, Math.PI, TAU); ctx.stroke();
+        ctx.restore();
+      }
+
+      // Terrain rim
+      ctx.save();
+      ctx.shadowColor = '#f87171';
+      ctx.shadowBlur = 10;
+      ctx.strokeStyle = 'rgba(248,113,113,.65)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      for (let i = 0; i < arr.length; i++) {
+        if (i === 0) ctx.moveTo(0, arr[0]);
+        else ctx.lineTo(i * STEP, arr[i]);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // Ground striations
+      ctx.save();
+      ctx.globalAlpha = 0.16;
+      ctx.strokeStyle = '#f87171';
+      ctx.lineWidth = 1;
+      for (let k = 1; k <= 3; k++) {
+        ctx.beginPath();
+        for (let i = 0; i < arr.length; i += 2) {
+          const x = i * STEP;
+          const y = arr[i] + 8 * k + Math.sin(x * 0.02 + k) * 2;
+          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // Aim preview
+      if (g.phase === 'aim' && g.turn === 'player' && !g.finished) {
+        const pts = previewPath(g);
+        for (let i = 0; i < pts.length; i++) {
+          const a = Math.max(0.08, 0.55 - i / pts.length * 0.45);
+          ctx.globalAlpha = a;
+          g.circle(pts[i].x, pts[i].y, i < 3 ? 3 : 2.2, '#7dd3fc');
+        }
+        ctx.globalAlpha = 1;
+        const tip = barrelTip(g.player, 1);
+        ctx.save();
+        ctx.shadowColor = '#7dd3fc'; ctx.shadowBlur = 16;
+        g.circle(tip.x, tip.y, 3.5, '#e0f7ff');
+        ctx.restore();
+      }
+
+      drawTank(g, ctx, g.player, '#67e8f9', '#0e2c33', 'YOU', true);
+      drawTank(g, ctx, g.ai, '#f87171', '#331013', 'CPU', false);
+
+      // Projectile
+      if (g.projectile) {
+        const p = g.projectile;
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let i = 0; i < p.trail.length; i++) {
+          if (i === 0) ctx.moveTo(p.trail[i].x, p.trail[i].y);
+          else ctx.lineTo(p.trail[i].x, p.trail[i].y);
+        }
+        ctx.strokeStyle = 'rgba(255,200,150,.45)';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+        ctx.restore();
+        g.glow(p.x, p.y, 8, 'rgba(255,225,190,.9)', 24);
+        g.circle(p.x, p.y, 4.5, '#fff3df');
+        g.circle(p.x, p.y, 2, '#ffffff');
+      }
+
+      if (g.muzzle > 0 && g.muzzlePos) {
+        const k = g.muzzle / 0.18;
+        ctx.save();
+        ctx.globalAlpha = k;
+        g.glow(g.muzzlePos.x, g.muzzlePos.y, 14 * k, '#ffd7a0', 30);
+        ctx.restore();
+      }
+
+      // Top HUD
+      g.text('ROUND ' + g.round, 36, 40, { size: 10, color: '#b98a8f', font: MONO });
+      const turnLabel = g.finished ? 'DUEL OVER'
+        : g.phase === 'settle' ? 'IMPACT'
+        : g.phase === 'flying' ? 'SHELL IN FLIGHT'
+        : g.phase === 'aiAim' ? 'ENEMY AIMING'
+        : 'YOUR TURN · LINE IT UP';
+      g.text(turnLabel, 480, 40, {
+        size: 12, align: 'center', font: MONO,
+        color: g.phase === 'aiAim' ? '#f87171' : '#f4d7d7',
+        glow: g.phase === 'aiAim' ? '#f87171' : null, blur: 12
+      });
+
+      // Wind flag
+      const wx = 866, wy = 26;
+      g.line(wx, wy, wx, wy + 38, 'rgba(255,255,255,.35)', 2);
+      const mag = Math.min(1, Math.abs(g.wind) / 78);
+      const flen = 16 + mag * 46;
+      const dir = g.wind >= 0 ? 1 : -1;
+      ctx.save();
+      ctx.fillStyle = 'rgba(248,113,113,' + (0.35 + mag * 0.5) + ')';
+      ctx.beginPath();
+      ctx.moveTo(wx, wy + 2);
+      ctx.quadraticCurveTo(wx + dir * flen * 0.5, wy + 2 + Math.sin(g.time * 4) * 4, wx + dir * flen, wy + 10);
+      ctx.lineTo(wx, wy + 18);
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      g.text('WIND ' + Math.round(Math.abs(g.wind)) + (g.wind >= 0 ? '  →' : '  ←'), 930, 84,
+        { size: 10, align: 'right', color: '#d99a9c', font: MONO });
+
+      // Aim / power panel
+      const active = g.phase === 'aim' && g.turn === 'player' && !g.finished;
+      g.roundRect(22, 516, 286, 64, 13, 'rgba(12,4,6,.74)', 'rgba(248,113,113,.20)', 1);
+      g.text('ANGLE', 40, 540, { size: 8, color: '#9b7478', font: MONO });
+      g.text(Math.round(g.player.angle) + '°', 40, 568, {
+        size: 20, color: active ? '#f4f1e8' : '#9b7478', font: MONO
+      });
+      g.roundRect(40, 572, 100, 3, 1.5, 'rgba(255,255,255,.08)');
+      g.roundRect(40, 572, 100 * (g.player.angle - 8) / 74, 3, 1.5, '#7dd3fc');
+
+      g.text('POWER', 168, 540, { size: 8, color: '#9b7478', font: MONO });
+      g.text(String(Math.round(g.player.power)), 168, 568, {
+        size: 20, color: active ? '#f4f1e8' : '#9b7478', font: MONO
+      });
+      g.roundRect(168, 572, 118, 3, 1.5, 'rgba(255,255,255,.08)');
+      g.roundRect(168, 572, 118 * (g.player.power - 10) / 90, 3, 1.5, '#f87171');
+
+      // Fire button
+      const ready = active;
+      g.roundRect(742, 512, 194, 68, 14,
+        ready ? 'rgba(248,113,113,.18)' : 'rgba(255,255,255,.035)',
+        ready ? 'rgba(248,113,113,.75)' : 'rgba(255,255,255,.12)', 1.5);
+      g.text('FIRE', 839, 545, {
+        size: 19, align: 'center', font: MONO,
+        color: ready ? '#ffe4e4' : 'rgba(255,255,255,.28)',
+        glow: ready ? '#f87171' : null, blur: 16
+      });
+      g.text('SPACE / TAP', 839, 566, {
+        size: 8, align: 'center', color: ready ? 'rgba(255,220,220,.7)' : 'rgba(255,255,255,.18)', font: MONO
+      });
+
+      g.text('← → ANGLE   ·   ↑ ↓ POWER   ·   WIND PUSHES EVERY SHELL', 480, 594,
+        { size: 9, align: 'center', color: '#7c555a', font: MONO });
+
+      // Floating damage numbers
+      for (let i = 0; i < g.pops.length; i++) {
+        const p = g.pops[i];
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, 1 - p.t / p.life);
+        g.text(p.text, p.x, p.y, { size: 14, align: 'center', color: p.color, font: MONO, glow: p.color, blur: 10 });
+        ctx.restore();
+      }
+
+      if (g.player.flash > 0 || g.ai.flash > 0) {
+        const a = Math.max(g.player.flash, g.ai.flash) * 0.10;
+        const fg = ctx.createRadialGradient(480, 300, 120, 480, 300, 600);
+        fg.addColorStop(0, 'rgba(255,80,80,0)');
+        fg.addColorStop(1, 'rgba(255,80,80,' + a + ')');
+        ctx.fillStyle = fg; ctx.fillRect(0, 0, W, H);
+      }
+
+      const vg = ctx.createRadialGradient(480, 280, 240, 480, 300, 660);
+      vg.addColorStop(0, 'rgba(0,0,0,0)');
+      vg.addColorStop(1, 'rgba(4,1,2,.6)');
+      ctx.fillStyle = vg; ctx.fillRect(0, 0, W, H);
+    }
+  });
+
+  function drawRidge(g, ctx, base, amp, color, phase, freq) {
+    ctx.beginPath();
+    ctx.moveTo(0, H);
+    for (let x = 0; x <= W; x += 20) {
+      const y = base + Math.sin(x * freq + phase) * amp + Math.sin(x * freq * 2.3 + phase * 2) * amp * 0.34;
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W, H);
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  function drawTank(g, ctx, tank, color, dark, label, isPlayer) {
+    const x = tank.x, y = tank.y;
+    const dir = isPlayer ? 1 : -1;
+    const rad = tank.angle * Math.PI / 180;
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,.38)';
+    ctx.beginPath();
+    ctx.ellipse(x, y + 2, 48, 10, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+
+    // Treads
+    g.roundRect(x - 40, y - 20, 80, 22, 10, '#160e10', 'rgba(255,255,255,.10)', 1);
+    for (let i = -3; i <= 3; i++) {
+      g.circle(x + i * 11, y - 9, 5.2, '#241518');
+      g.circle(x + i * 11, y - 9, 2.1, 'rgba(255,255,255,.08)');
+    }
+
+    // Hull
+    const bodyG = ctx.createLinearGradient(0, y - 44, 0, y - 12);
+    bodyG.addColorStop(0, color);
+    bodyG.addColorStop(1, dark);
+    ctx.save();
+    ctx.shadowColor = color;
+    ctx.shadowBlur = tank.flash > 0 ? 24 : 10;
+    g.roundRect(x - 33, y - 42, 66, 26, 8, bodyG, 'rgba(255,255,255,.18)', 1);
+    ctx.restore();
+    g.roundRect(x - 24, y - 38, 48, 4, 2, 'rgba(255,255,255,.18)');
+
+    // Turret
+    g.circle(x, y - 48, 15, dark, color, 2);
+    g.circle(x, y - 48, 7, 'rgba(255,255,255,.10)');
+
+    // Barrel
+    const bx = x + Math.cos(rad) * 46 * dir;
+    const by = y - 44 - Math.sin(rad) * 46;
+    g.line(x, y - 44, bx, by, dark, 9);
+    g.line(x, y - 44, bx, by, color, 5.5);
+    g.circle(bx, by, 4.2, color, 'rgba(255,255,255,.55)', 1);
+
+    // Glowing tank flash
+    if (tank.flash > 0) {
+      ctx.save();
+      ctx.globalAlpha = tank.flash;
+      g.circle(x, y - 34, 38, 'rgba(255,120,90,.28)', 'rgba(255,180,140,.9)', 2);
+      ctx.restore();
+    }
+
+    // Label
+    g.text(label, x, y - 108, {
+      size: 9, align: 'center', color: color, font: MONO
+    });
+    g.text(Math.ceil(tank.hp) + ' HP', x + 64, y - 108, {
+      size: 9, align: 'right', color: 'rgba(255,255,255,.62)', font: MONO
+    });
+    g.roundRect(x - 44, y - 101, 88, 6, 3, 'rgba(255,255,255,.10)');
+    g.roundRect(x - 44, y - 101, 88 * Math.max(0, tank.hp) / 100, 6, 3, color);
+
+    // Antenna
+    g.line(x - 30 * dir, y - 40, x - 30 * dir - 4 * dir, y - 62, 'rgba(255,255,255,.28)', 1);
+    g.circle(x - 30 * dir - 4 * dir, y - 63, 1.8, color);
+  }
+})();
+</script>
+</body>
+</html>

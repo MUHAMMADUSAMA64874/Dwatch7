@@ -1,0 +1,673 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+  <title>Tilt Labyrinth · WristLab Arcade</title>
+</head>
+<body>
+<script src="./engine.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  const U = WristGame.util;
+  const clamp = U.clamp, rand = U.rand, randInt = U.randInt, dist = U.dist;
+  const TAU = Math.PI * 2;
+  const W = 960, H = 600;
+  const MONO = "'IBM Plex Mono',monospace";
+
+  const COLS = 11, ROWS = 7, CELL = 60;
+  const BX = 150, BY = 112, BW = COLS * CELL, BH = ROWS * CELL;
+  const WALL_HALF = 5;
+  const MARBLE_R = 11;
+  const START = { x: CELL / 2, y: CELL / 2 };
+  const GOAL = { x: BW - CELL / 2, y: BH - CELL / 2 };
+  const TIME_LIMIT = 60;
+
+  /* ---------------- maze ---------------- */
+
+  function buildMaze() {
+    const cells = [];
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        cells.push({ x, y, walls: [true, true, true, true], seen: false });
+      }
+    }
+    const at = (x, y) => (x < 0 || x >= COLS || y < 0 || y >= ROWS) ? null : cells[y * COLS + x];
+    const dirs = [
+      { dx: 0, dy: -1, w: 0, o: 2 },
+      { dx: 1, dy: 0, w: 1, o: 3 },
+      { dx: 0, dy: 1, w: 2, o: 0 },
+      { dx: -1, dy: 0, w: 3, o: 1 }
+    ];
+    const stack = [cells[0]];
+    cells[0].seen = true;
+    while (stack.length) {
+      const c = stack[stack.length - 1];
+      const opts = [];
+      for (const d of dirs) {
+        const n = at(c.x + d.dx, c.y + d.dy);
+        if (n && !n.seen) opts.push({ d, n });
+      }
+      if (!opts.length) { stack.pop(); continue; }
+      const q = opts[randInt(0, opts.length - 1)];
+      c.walls[q.d.w] = false;
+      q.n.walls[q.d.o] = false;
+      q.n.seen = true;
+      stack.push(q.n);
+    }
+
+    const hSet = new Set(), vSet = new Set();
+    for (const c of cells) {
+      if (c.walls[0]) hSet.add(c.x + ',' + c.y);
+      if (c.walls[2]) hSet.add(c.x + ',' + (c.y + 1));
+      if (c.walls[3]) vSet.add(c.x + ',' + c.y);
+      if (c.walls[1]) vSet.add((c.x + 1) + ',' + c.y);
+    }
+    const segs = [];
+    const byRow = {};
+    hSet.forEach(k => {
+      const p = k.split(',');
+      const y = +p[1];
+      (byRow[y] = byRow[y] || []).push(+p[0]);
+    });
+    for (const y in byRow) {
+      const xs = byRow[y].sort((a, b) => a - b);
+      let s = xs[0], p = xs[0];
+      for (let i = 1; i <= xs.length; i++) {
+        if (i < xs.length && xs[i] === p + 1) { p = xs[i]; continue; }
+        segs.push({ x1: s * CELL, y1: +y * CELL, x2: (p + 1) * CELL, y2: +y * CELL });
+        if (i < xs.length) { s = xs[i]; p = xs[i]; }
+      }
+    }
+    const byCol = {};
+    vSet.forEach(k => {
+      const p = k.split(',');
+      const x = +p[0];
+      (byCol[x] = byCol[x] || []).push(+p[1]);
+    });
+    for (const x in byCol) {
+      const ys = byCol[x].sort((a, b) => a - b);
+      let s = ys[0], p = ys[0];
+      for (let i = 1; i <= ys.length; i++) {
+        if (i < ys.length && ys[i] === p + 1) { p = ys[i]; continue; }
+        segs.push({ x1: +x * CELL, y1: s * CELL, x2: +x * CELL, y2: (p + 1) * CELL });
+        if (i < ys.length) { s = ys[i]; p = ys[i]; }
+      }
+    }
+    return segs;
+  }
+
+  function cellCenter(cx, cy) {
+    return { x: (cx + 0.5) * CELL, y: (cy + 0.5) * CELL };
+  }
+
+  /* ---------------- helpers ---------------- */
+
+  function inputVector(g) {
+    let ix = 0, iy = 0;
+    if (g.pressed('left')) ix -= 1;
+    if (g.pressed('right')) ix += 1;
+    if (g.pressed('up')) iy -= 1;
+    if (g.pressed('down')) iy += 1;
+    if (g.drag.active) { ix += g.drag.x; iy += g.drag.y; }
+    ix += g.watchX;
+    iy += g.watchY;
+    ix += clamp(g.tilt.x * 1.4, -1, 1);
+    iy += clamp(g.tilt.y * 1.4, -1, 1);
+    const m = Math.hypot(ix, iy);
+    if (m > 1) { ix /= m; iy /= m; }
+    return { x: ix, y: iy };
+  }
+
+  function collide(g, m, sdt) {
+    let impact = 0;
+    for (const s of g.maze) {
+      const dx = s.x2 - s.x1, dy = s.y2 - s.y1;
+      const len2 = dx * dx + dy * dy || 1;
+      let t = ((m.x - s.x1) * dx + (m.y - s.y1) * dy) / len2;
+      t = clamp(t, 0, 1);
+      const px = s.x1 + dx * t, py = s.y1 + dy * t;
+      let nx = m.x - px, ny = m.y - py;
+      let d = Math.hypot(nx, ny);
+      const minD = MARBLE_R + WALL_HALF;
+      if (d < minD) {
+        if (d < 0.0001) { nx = 0; ny = -1; d = 0.0001; }
+        else { nx /= d; ny /= d; }
+        m.x = px + nx * (minD + 0.05);
+        m.y = py + ny * (minD + 0.05);
+        const vn = m.vx * nx + m.vy * ny;
+        if (vn < 0) {
+          impact = Math.max(impact, -vn);
+          m.vx -= (1 + 0.42) * vn * nx;
+          m.vy -= (1 + 0.42) * vn * ny;
+          m.vx *= 0.93;
+          m.vy *= 0.93;
+        }
+      }
+    }
+    m.x = clamp(m.x, MARBLE_R + WALL_HALF, BW - MARBLE_R - WALL_HALF);
+    m.y = clamp(m.y, MARBLE_R + WALL_HALF, BH - MARBLE_R - WALL_HALF);
+    if (impact > 40 && g.time - g.lastWall > 0.075) {
+      g.lastWall = g.time;
+      g.audio.tone(150 + rand(0, 70), 0.04, 'square', clamp(impact / 3600, 0.015, 0.05));
+      g.haptic('tick');
+      if (impact > 210) {
+        g.burst(BX + m.x, BY + m.y, '#7dd3fc', 4, { speed: 90, life: 0.35, size: 2, gravity: 80 });
+      }
+    }
+  }
+
+  function collectKeys(g) {
+    for (const k of g.keyItems) {
+      if (k.got) continue;
+      if (dist(g.marble.x, g.marble.y, k.x, k.y) < 24) {
+        k.got = true;
+        g.keysCollected++;
+        g.addScore(100);
+        g.audio.sfx('coin');
+        g.haptic('coin');
+        g.burst(BX + k.x, BY + k.y, '#fcd34d', 16, { speed: 190, life: 0.7, size: 3 });
+        float(g, '+100', BX + k.x, BY + k.y - 18, '#fcd34d');
+      }
+    }
+  }
+
+  function float(g, text, x, y, color) {
+    g.floats.push({ text, x, y, color, t: 0, life: 0.9 });
+    if (g.floats.length > 5) g.floats.shift();
+  }
+
+  /* ---------------- game ---------------- */
+
+  WristGame.mount({
+    id: 'tilt-labyrinth',
+    title: 'Tilt Labyrinth',
+    tagline: 'Steady hands. Sharp corners.',
+    category: 'Puzzle',
+    accent: '#7dd3fc',
+    bg: '#040d12',
+    controls: [
+      { keys: '← → ↑ ↓', label: 'TILT' },
+      { keys: 'DRAG', label: 'TILT' },
+      { keys: 'WATCH', label: 'LEFT / RIGHT' }
+    ],
+    tips: [
+      'The marble carries momentum. Ease off early into corners.',
+      'Collect the three gold keys for bonus points — the exit is always open.',
+      'Sixty seconds on the clock. The clock pays you on the way out.'
+    ],
+
+    init(g) {
+      g.score = 0;
+      g.maze = buildMaze();
+      g.seed = randInt(1000, 9999);
+      g.marble = {
+        x: START.x, y: START.y, vx: 0, vy: 0,
+        spin: 0, trail: []
+      };
+      g.timeLeft = TIME_LIMIT;
+      g.keysCollected = 0;
+      g.keyItems = [];
+      const used = new Set([0 + ',' + 0, (COLS - 1) + ',' + (ROWS - 1)]);
+      let guard = 0;
+      while (g.keyItems.length < 3 && guard++ < 300) {
+        const cx = randInt(0, COLS - 1), cy = randInt(0, ROWS - 1);
+        const id = cx + ',' + cy;
+        if (used.has(id)) continue;
+        used.add(id);
+        const c = cellCenter(cx, cy);
+        g.keyItems.push({ x: c.x, y: c.y, got: false, ph: rand(0, TAU) });
+      }
+      g.drag = { active: false, sx: 0, sy: 0, x: 0, y: 0 };
+      g.watchX = 0; g.watchY = 0;
+      g.floats = [];
+      g.lastWall = 0;
+      g.lastRoll = 0;
+      g.lastSec = 60;
+      g.finished = false;
+      g.startPulse = 0;
+      g.audio.stopMusic();
+      if (!g._tiltDragBound) {
+        g._tiltDragBound = true;
+        window.addEventListener('blur', () => { g.drag.active = false; g.drag.x = g.drag.y = 0; });
+      }
+    },
+
+    onStart(g) {
+      g.audio.startMusic({ root: 130.81, bpm: 76, scale: [0, 3, 5, 7, 10], wave: 'sine', gain: 0.03 });
+      g.haptic('start');
+    },
+
+    onAction(g, action, down) {
+      if (!down) return;
+      // Watch presses are short: fire an impulse that decays in update().
+      if (action === 'left') g.watchX = -1;
+      else if (action === 'right') g.watchX = 1;
+      else if (action === 'up') g.watchY = -1;
+      else if (action === 'down') g.watchY = 1;
+      else if (action === 'action') g.audio.sfx('tick');
+    },
+
+    onPointer(g, x, y, type) {
+      if (type === 'down') {
+        g.drag.active = true;
+        g.drag.sx = x; g.drag.sy = y;
+        g.drag.x = 0; g.drag.y = 0;
+      } else if (type === 'drag') {
+        if (!g.drag.active) { g.drag.active = true; g.drag.sx = x; g.drag.sy = y; }
+        g.drag.x = clamp((x - g.drag.sx) / 130, -1, 1);
+        g.drag.y = clamp((y - g.drag.sy) / 130, -1, 1);
+      } else if (type === 'up') {
+        g.drag.active = false;
+        g.drag.x = 0; g.drag.y = 0;
+      }
+    },
+
+    update(g, dt) {
+      if (g.finished) return;
+      const m = g.marble;
+
+      g.timeLeft -= dt;
+      g.watchX *= Math.exp(-8 * dt);
+      g.watchY *= Math.exp(-8 * dt);
+      if (Math.abs(g.watchX) < 0.01) g.watchX = 0;
+      if (Math.abs(g.watchY) < 0.01) g.watchY = 0;
+      g.startPulse = Math.max(0, g.startPulse - dt);
+
+      const inp = inputVector(g);
+      const accel = 1350;
+      const steps = clamp(Math.ceil(dt / 0.006), 1, 8);
+      const sdt = dt / steps;
+
+      for (let s = 0; s < steps; s++) {
+        m.vx += inp.x * accel * sdt;
+        m.vy += inp.y * accel * sdt;
+        const damp = Math.exp(-2.0 * sdt);
+        m.vx *= damp; m.vy *= damp;
+        const sp = Math.hypot(m.vx, m.vy);
+        if (sp > 520) { m.vx = m.vx / sp * 520; m.vy = m.vy / sp * 520; }
+        m.x += m.vx * sdt;
+        m.y += m.vy * sdt;
+        collide(g, m, sdt);
+      }
+
+      const speed = Math.hypot(m.vx, m.vy);
+      m.spin += speed * dt / 13;
+      m.trail.push({ x: m.x, y: m.y });
+      if (m.trail.length > 24) m.trail.shift();
+
+      // rolling rumble, heavily throttled
+      if (speed > 90 && g.time - g.lastRoll > 0.19) {
+        g.lastRoll = g.time;
+        g.audio.tone(85 + speed * 0.13, 0.022, 'sine', 0.012);
+      }
+
+      collectKeys(g);
+
+      // last-ten-seconds pressure
+      const sec = Math.ceil(g.timeLeft);
+      if (sec !== g.lastSec) {
+        g.lastSec = sec;
+        if (sec <= 10 && sec > 0) {
+          g.audio.sfx('tick');
+          if (sec <= 5) g.haptic('heartbeat');
+        }
+      }
+
+      if (dist(m.x, m.y, GOAL.x, GOAL.y) < 30) {
+        g.finished = true;
+        const timeBonus = Math.max(0, Math.floor(g.timeLeft * 10));
+        const total = 500 + timeBonus;
+        g.addScore(total);
+        g.audio.sfx('win');
+        g.haptic('coin');
+        g.shake(4, 0.3);
+        g.burst(BX + GOAL.x, BY + GOAL.y, '#7dd3fc', 44, { speed: 300, life: 1, size: 4 });
+        g.burst(BX + GOAL.x, BY + GOAL.y, '#ffffff', 16, { speed: 180, life: 0.7, size: 2.5 });
+        g.over('Escaped with ' + g.timeLeft.toFixed(1) + 's left · +' + total + ' · ' + g.keysCollected + '/3 keys');
+        return;
+      }
+
+      if (g.timeLeft <= 0) {
+        g.finished = true;
+        g.shake(8, 0.4);
+        g.audio.sfx('buzzer');
+        g.haptic('hit');
+        g.over('Time up · ' + g.keysCollected + '/3 keys collected');
+        return;
+      }
+
+      for (let i = g.floats.length - 1; i >= 0; i--) {
+        g.floats[i].t += dt;
+        if (g.floats[i].t >= g.floats[i].life) g.floats.splice(i, 1);
+      }
+    },
+
+    draw(g, ctx) {
+      g.clear('#040d12');
+
+      const bg = ctx.createRadialGradient(480, 300, 40, 480, 320, 660);
+      bg.addColorStop(0, 'rgba(18,60,78,.4)');
+      bg.addColorStop(0.6, 'rgba(5,24,33,.25)');
+      bg.addColorStop(1, 'rgba(2,8,12,0)');
+      ctx.fillStyle = bg;
+      ctx.fillRect(0, 0, W, H);
+
+      // faint blueprint grid
+      g.grid('rgba(125,211,252,.028)', 40);
+
+      drawHud(g, ctx);
+      drawBoard(g, ctx);
+
+      // tilt joystick
+      drawTilt(g, ctx, inputVector(g));
+
+      // corner labels
+      g.text('SEED ' + g.seed, BX, H - 18, { size: 8, color: 'rgba(125,211,252,.28)', font: MONO });
+      g.text('EXIT ALWAYS OPEN', BX + BW, H - 18, {
+        size: 8, color: 'rgba(125,211,252,.28)', font: MONO, align: 'right'
+      });
+    }
+  });
+
+  /* ---------------- drawing ---------------- */
+
+  function drawHud(g, ctx) {
+    const low = g.timeLeft <= 10;
+    const col = low ? '#f87171' : '#7dd3fc';
+    const pulse = low ? 0.55 + 0.45 * Math.abs(Math.sin(g.time * 6)) : 1;
+
+    g.text('TIME LEFT', BX, 34, { size: 9, color: 'rgba(148,190,205,.7)', font: MONO });
+    g.text(g.timeLeft.toFixed(1), BX, 82, {
+      size: 42, color: col, font: MONO, weight: 700, alpha: pulse,
+      glow: low ? 'rgba(248,113,113,.6)' : 'rgba(125,211,252,.45)', blur: 20
+    });
+
+    // time bar
+    const t = clamp(g.timeLeft / TIME_LIMIT, 0, 1);
+    g.roundRect(BX, 96, BW, 5, 2.5, 'rgba(125,211,252,.09)');
+    if (t > 0) {
+      const grd = ctx.createLinearGradient(BX, 0, BX + BW, 0);
+      grd.addColorStop(0, low ? '#f87171' : '#7dd3fc');
+      grd.addColorStop(1, low ? '#fb923c' : '#a5f3fc');
+      g.roundRect(BX, 96, BW * t, 5, 2.5, grd);
+    }
+    for (let i = 1; i < 6; i++) {
+      ctx.fillStyle = 'rgba(4,13,18,.8)';
+      ctx.fillRect(BX + BW * i / 6, 96, 2, 5);
+    }
+
+    g.text('KEYS', BX + BW, 34, { size: 9, color: 'rgba(148,190,205,.7)', font: MONO, align: 'right' });
+    for (let i = 0; i < 3; i++) {
+      const k = g.keyItems[i];
+      const got = k && k.got;
+      drawKey(ctx, BX + BW - 12 - (2 - i) * 30, 58, 0.62, got);
+    }
+    g.text(g.keysCollected + ' / 3', BX + BW, 88, {
+      size: 12, color: g.keysCollected === 3 ? '#fcd34d' : 'rgba(148,190,205,.5)', font: MONO, align: 'right'
+    });
+
+    // center label
+    g.text('PROCEDURAL LABYRINTH', 480, 24, {
+      size: 8, color: 'rgba(125,211,252,.32)', font: MONO, align: 'center'
+    });
+    g.text('11 × 7', 480, 40, {
+      size: 8, color: 'rgba(125,211,252,.2)', font: MONO, align: 'center'
+    });
+  }
+
+  function drawBoard(g, ctx) {
+    // board shadow + floor
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,.65)';
+    ctx.shadowBlur = 40;
+    ctx.shadowOffsetY = 18;
+    g.roundRect(BX - 12, BY - 12, BW + 24, BH + 24, 18, '#061820');
+    ctx.restore();
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.roundRect(BX - 6, BY - 6, BW + 12, BH + 12, 14);
+    ctx.clip();
+
+    const floor = ctx.createLinearGradient(BX, BY, BX + BW, BY + BH);
+    floor.addColorStop(0, '#08232d');
+    floor.addColorStop(0.5, '#061a22');
+    floor.addColorStop(1, '#04121a');
+    ctx.fillStyle = floor;
+    ctx.fillRect(BX - 6, BY - 6, BW + 12, BH + 12);
+
+    // cell floor detail
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        if ((x + y) % 2 === 0) {
+          ctx.fillStyle = 'rgba(125,211,252,.017)';
+          ctx.fillRect(BX + x * CELL, BY + y * CELL, CELL, CELL);
+        }
+        const c = cellCenter(x, y);
+        ctx.fillStyle = 'rgba(125,211,252,.10)';
+        ctx.beginPath();
+        ctx.arc(BX + c.x, BY + c.y, 1.2, 0, TAU);
+        ctx.fill();
+      }
+    }
+
+    drawGoal(g, ctx);
+    for (const k of g.keyItems) {
+      if (!k.got) drawKey(ctx, BX + k.x, BY + k.y + Math.sin(g.time * 2.4 + k.ph) * 3, 1, true);
+    }
+    drawStart(g, ctx);
+    drawWalls(g, ctx);
+
+    // marble trail + marble
+    const m = g.marble;
+    for (let i = 0; i < m.trail.length; i++) {
+      const t = m.trail[i];
+      const a = (i / m.trail.length) * 0.24;
+      ctx.fillStyle = 'rgba(125,211,252,' + a.toFixed(3) + ')';
+      ctx.beginPath();
+      ctx.arc(BX + t.x, BY + t.y, MARBLE_R * (0.25 + 0.6 * i / m.trail.length), 0, TAU);
+      ctx.fill();
+    }
+
+    // shadow
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    ctx.fillStyle = '#000';
+    ctx.beginPath();
+    ctx.ellipse(BX + m.x + 3, BY + m.y + 6, MARBLE_R * 1.05, MARBLE_R * 0.72, 0, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+
+    drawMarble(ctx, BX + m.x, BY + m.y, m.spin);
+
+    ctx.restore();
+
+    // frame
+    g.roundRect(BX - 8, BY - 8, BW + 16, BH + 16, 16, null, 'rgba(125,211,252,.22)', 1.5);
+  }
+
+  function drawStart(g, ctx) {
+    const x = BX + START.x, y = BY + START.y;
+    ctx.save();
+    ctx.setLineDash([3, 6]);
+    ctx.strokeStyle = 'rgba(125,211,252,.22)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(x, y, 20 + Math.sin(g.time * 2) * 2, 0, TAU);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawGoal(g, ctx) {
+    const x = BX + GOAL.x, y = BY + GOAL.y;
+    const pulse = 1 + Math.sin(g.time * 3.2) * 0.08;
+    ctx.save();
+    ctx.shadowColor = '#7dd3fc';
+    ctx.shadowBlur = 30;
+    const grd = ctx.createRadialGradient(x, y, 2, x, y, 30);
+    grd.addColorStop(0, 'rgba(224,250,255,.95)');
+    grd.addColorStop(0.4, 'rgba(125,211,252,.75)');
+    grd.addColorStop(1, 'rgba(56,189,248,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(x, y, 30 * pulse, 0, TAU);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = 'rgba(190,242,255,.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, 15, 0, TAU);
+    ctx.stroke();
+    ctx.fillStyle = '#e8fdff';
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, TAU);
+    ctx.fill();
+    for (let i = 0; i < 6; i++) {
+      const a = g.time * 0.7 + i * TAU / 6;
+      ctx.strokeStyle = 'rgba(125,211,252,.45)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x + Math.cos(a) * 22, y + Math.sin(a) * 22);
+      ctx.lineTo(x + Math.cos(a) * 28, y + Math.sin(a) * 28);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawKey(ctx, x, y, s, lit) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(-0.6);
+    ctx.scale(s, s);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (lit) {
+      ctx.shadowColor = '#fcd34d';
+      ctx.shadowBlur = 18;
+    }
+    ctx.strokeStyle = lit ? '#fcd34d' : 'rgba(252,211,77,.18)';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.arc(-7, 0, 7, 0, TAU);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(19, 0);
+    ctx.moveTo(13, 0);
+    ctx.lineTo(13, 6);
+    ctx.moveTo(18, 0);
+    ctx.lineTo(18, 5);
+    ctx.stroke();
+    if (lit) {
+      ctx.shadowBlur = 0;
+      ctx.strokeStyle = 'rgba(255,248,214,.85)';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(-7, 0, 7, 0, TAU);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(19, 0);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function drawWalls(g, ctx) {
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (const s of g.maze) {
+      ctx.moveTo(BX + s.x1, BY + s.y1);
+      ctx.lineTo(BX + s.x2, BY + s.y2);
+    }
+    ctx.strokeStyle = 'rgba(125,211,252,.14)';
+    ctx.lineWidth = 13;
+    ctx.shadowColor = '#7dd3fc';
+    ctx.shadowBlur = 20;
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#7dd3fc';
+    ctx.lineWidth = 4;
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(232,253,255,.85)';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  function drawMarble(ctx, x, y, spin) {
+    ctx.save();
+    ctx.shadowColor = '#7dd3fc';
+    ctx.shadowBlur = 26;
+    const grd = ctx.createRadialGradient(x - 4, y - 5, 1, x, y, MARBLE_R * 1.5);
+    grd.addColorStop(0, '#ffffff');
+    grd.addColorStop(0.35, '#dff7ff');
+    grd.addColorStop(0.75, '#8fd8f5');
+    grd.addColorStop(1, '#3f9fc4');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(x, y, MARBLE_R, 0, TAU);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(x, y, MARBLE_R - 1, 0, TAU);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(30,120,155,.35)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x - Math.cos(spin) * 5, y - Math.sin(spin) * 5, 7, spin, spin + 2.1);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(x + Math.cos(spin * 1.3) * 4, y + Math.sin(spin * 1.3) * 4, 5, spin * 1.3 + 2.5, spin * 1.3 + 4.2);
+    ctx.stroke();
+    ctx.restore();
+
+    ctx.fillStyle = 'rgba(255,255,255,.9)';
+    ctx.beginPath();
+    ctx.arc(x - 3.6, y - 4.4, 2.6, 0, TAU);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawTilt(g, ctx, inp) {
+    const cx = 480, cy = 562;
+    g.roundRect(cx - 110, cy - 23, 220, 46, 23, 'rgba(6,24,31,.8)', 'rgba(125,211,252,.14)', 1);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(125,211,252,.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - 78, cy); ctx.lineTo(cx + 78, cy);
+    ctx.moveTo(cx, cy - 15); ctx.lineTo(cx, cy + 15);
+    ctx.stroke();
+    ctx.restore();
+    g.text('TILT', cx - 92, cy + 3, { size: 8, color: 'rgba(148,190,205,.5)', font: MONO, align: 'center' });
+
+    const dx = cx + inp.x * 46;
+    const dy = cy + inp.y * 15;
+    g.glow(dx, dy, 6, '#7dd3fc', 14);
+    g.circle(dx, dy, 6, '#e8fdff');
+    g.text('DRAG OR ARROWS', cx + 48, cy + 3, {
+      size: 8, color: 'rgba(148,190,205,.45)', font: MONO, align: 'center'
+    });
+
+    for (const f of g.floats) {
+      const k = f.t / f.life;
+      g.text(f.text, f.x, f.y - k * 24, {
+        size: 14, color: f.color, font: MONO, align: 'center', weight: 600,
+        alpha: 1 - k, glow: f.color, blur: 10
+      });
+    }
+  }
+})();
+</script>
+</body>
+</html>

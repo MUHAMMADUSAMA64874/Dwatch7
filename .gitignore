@@ -1,0 +1,26 @@
+# WristLab Arcade — local tooling output
+node_modules/
+test-results/
+playwright-report/
+__pycache__/
+*.pyc
+.playwright-mcp/
+
+# Runtime logs (logs/silence.wav is a shipped asset, keep the folder tracked)
+logs/*.log
+*.log
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Archived reverse-engineering artefacts stay in the repo, but not big binaries
+_archive/**/*.apk
+_archive/**/*.aab
+_archive/**/*.dex
+.aider*
+
+_archive/

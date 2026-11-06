@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>WristLab — D Watch 7 Decoded</title>
+  <meta name="description" content="A reverse-engineered smartwatch studio: 20 playable games, live haptics, biofeedback, protocol lab and the full decoding story.">
+  <meta name="theme-color" content="#08090b">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0d0b'/%3E%3Ccircle cx='32' cy='32' r='17' fill='none' stroke='%237cc9ff' stroke-width='3'/%3E%3Cpath d='M32 22v12l8 5' fill='none' stroke='%23f4f1e8' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,500;12..96,600;12..96,700;12..96,800&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="assets/app.css">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <div class="app">
+    <!-- ================= SIDEBAR ================= -->
+    <aside class="sidebar">
+      <a class="brand" href="#/dashboard" aria-label="WristLab home">
+        <span class="brand-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+            <rect x="7" y="1.8" width="10" height="4.2" rx="1.6"/>
+            <rect x="7" y="18" width="10" height="4.2" rx="1.6"/>
+            <circle cx="12" cy="12" r="6.6"/>
+            <path d="M12 8.6V12l2.5 1.6"/>
+          </svg>
+        </span>
+        <span class="brand-text">
+          <b>WRISTLAB</b>
+          <small>D WATCH 7 · STUDIO</small>
+        </span>
+      </a>
+
+      <nav class="nav" id="nav">
+        <div class="nav-label">WORKSPACE</div>
+        <a href="#/dashboard" data-nav="dashboard">
+          <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+          <span>Dashboard</span>
+        </a>
+        <a href="#/arcade" data-nav="arcade">
+          <svg viewBox="0 0 24 24"><path d="M7 8h10a4 4 0 0 1 4 4v3a3 3 0 0 1-5.4 1.8L14 15h-4l-1.6 1.8A3 3 0 0 1 3 15v-3a4 4 0 0 1 4-4Z"/><path d="M8 11v3M6.5 12.5h3M15.5 11.5h.01M18 13.5h.01"/></svg>
+          <span>Arcade</span>
+          <span class="nav-count" id="navCount">20</span>
+        </a>
+        <a href="#/lab" data-nav="lab">
+          <svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6.5L4.8 18a2 2 0 0 0 1.7 3h11a2 2 0 0 0 1.7-3L14 9.5V3"/><path d="M7.5 14h9"/></svg>
+          <span>Protocol Lab</span>
+        </a>
+        <a href="#/story" data-nav="story">
+          <svg viewBox="0 0 24 24"><path d="M4 4.5A2.5 2.5 0 0 1 6.5 2H20v18H6.5A2.5 2.5 0 0 0 4 22V4.5Z"/><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M8 7h8M8 10.5h5"/></svg>
+          <span>The Decode</span>
+        </a>
+        <a href="#/manage" data-nav="manage">
+          <svg viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2.2"/><circle cx="8" cy="17" r="2.2"/></svg>
+          <span>Manage</span>
+        </a>
+      </nav>
+
+      <div class="side-foot">
+        <div class="bridge-mini" id="sideBridge">
+          <div class="row"><span class="dot"></span><span id="sideBridgeText">Bridge offline</span></div>
+          <small id="sideBridgeHint">Start <b>start.bat</b> to link the watch.</small>
+        </div>
+        <div class="side-ver"><span>v1.0.0</span><span>MIT</span></div>
+      </div>
+    </aside>
+
+    <!-- ================= MAIN ================= -->
+    <div class="main">
+      <header class="topbar">
+        <div class="crumb">
+          <span class="c1">WRISTLAB</span>
+          <span class="sep">/</span>
+          <b id="crumb">Dashboard</b>
+        </div>
+        <div class="top-actions">
+          <button class="cmd-btn" id="cmdOpen" title="Command palette (Ctrl/Cmd + K)">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+            <span>Command</span><kbd>⌘K</kbd>
+          </button>
+          <div class="watch-chip" id="watchChip" title="Watch bridge status">
+            <span class="dot"></span>
+            <span id="watchChipText">Bridge offline</span>
+            <b class="bat" id="batteryChip">--%</b>
+          </div>
+          <button class="icon-btn" id="soundBtn" title="Toggle UI sound">
+            <svg viewBox="0 0 24 24"><path d="M11 5 6.5 9H3v6h3.5L11 19V5Z"/><path d="M15 9a4 4 0 0 1 0 6"/><path d="M17.5 6.5a7.5 7.5 0 0 1 0 11"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="view" id="view" aria-live="polite"></main>
+    </div>
+  </div>
+
+  <!-- ================= GAME MODAL ================= -->
+  <div class="modal" id="gameModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="game"></div>
+    <div class="modal-shell">
+      <div class="modal-head">
+        <div class="mt">
+          <span class="mi" id="gmIcon">🎮</span>
+          <div>
+            <b id="gmTitle">Game</b>
+            <span id="gmSub">WRISTLAB ARCADE</span>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn btn-secondary btn-sm" id="gmOpenTab">↗ New tab</button>
+          <button class="icon-btn" data-close="game" title="Close (Esc)">
+            <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="modal-body"><iframe id="gmFrame" title="Game" allow="autoplay; fullscreen"></iframe></div>
+    </div>
+  </div>
+
+  <!-- ================= GENERIC SHEET MODAL ================= -->
+  <div class="modal narrow" id="sheetModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close="sheet"></div>
+    <div class="modal-shell">
+      <div class="modal-head">
+        <div class="mt"><span class="mi" id="sheetIcon">✦</span><b id="sheetTitle">Panel</b></div>
+        <button class="icon-btn" data-close="sheet" title="Close (Esc)">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body" id="sheetBody"></div>
+    </div>
+  </div>
+
+  <!-- ================= COMMAND PALETTE ================= -->
+  <div class="palette" id="palette" aria-hidden="true">
+    <div class="pb" data-close="palette"></div>
+    <div class="ps">
+      <div class="pi">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="paletteInput" placeholder="Jump to a page, launch a game, fire a haptic…" autocomplete="off">
+        <kbd>ESC</kbd>
+      </div>
+      <div class="pl" id="paletteList"></div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts"></div>
+
+  <script src="games/registry.js"></script>
+  <script src="assets/vendor/three.min.js"></script>
+  <script src="assets/watch3d.js"></script>
+  <script src="assets/app.js"></script>
+</body>
+</html>
