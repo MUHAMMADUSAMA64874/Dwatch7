@@ -103,7 +103,7 @@ The first generation of watch games were one-off experiments with different inpu
 
 * **Wallpaper / PAR** – the native encoder is missing; custom dials stay blocked.
 
-* **OTA, carefully** – documented but flashing a $30 watch is how you brick it. This stays read-only until there is a recovery path.
+* **OTA, carefully** – documented but flashing a $10 watch is how you brick it. This stays read-only until there is a recovery path.
 
 * **More input** – wrist-shake works as a discrete event. A game that uses it as a deliberate “boost” gesture is the next experiment.
 

@@ -831,7 +831,7 @@
       '<div class="screen-title">' +
         '<span class="eyebrow"><i class="eyebrow-dot" aria-hidden="true"></i>D Watch 7 · decoded studio</span>' +
         '<h1>The watch, decoded.</h1>' +
-        '<p class="lede">Live telemetry from a $30 smartwatch that was never meant to be scriptable. Read the optical sensors and inspect every frame the firmware answers.</p>' +
+        '<p class="lede">Live telemetry from a $10 smartwatch that was never meant to be scriptable. Read the optical sensors and inspect every frame the firmware answers.</p>' +
         '<dl class="spec-rail">' +
           '<div><dt>Radio</dt><dd>Fr-BLE-1.0</dd></div>' +
           '<div><dt>Firmware</dt><dd>6.1.2 · 0x04</dd></div>' +
@@ -1296,7 +1296,7 @@
 
       '<section id="origin">' +
         '<h2>01, A watch with a sealed brain</h2>' +
-        '<p>The <b>D Watch 7</b> is a ~$30 wearable sold under a dozen names. It has a 240×280 screen, a buzzer, an optical heart-rate sensor, Bluetooth 5, and a companion app called <b>M2Wear</b> (<span class="mono">com.lianhezhuli.mtwear</span>). It does not have an app store, a JavaScript runtime, or any documented way to run your own code.</p>' +
+        '<p>The <b>D Watch 7</b> is a ~$10 wearable sold under a dozen names. It has a 240×280 screen, a buzzer, an optical heart-rate sensor, Bluetooth 5, and a companion app called <b>M2Wear</b> (<span class="mono">com.lianhezhuli.mtwear</span>). It does not have an app store, a JavaScript runtime, or any documented way to run your own code.</p>' +
         '<p>I wanted to know one thing: <b>what is the watch actually saying over Bluetooth?</b> If I could speak its protocol, maybe I could make it do something the stock firmware never intended. That question turned into months of probing, decompiling, and building.</p>' +
         '<div class="callout"><b>The core constraint:</b> the firmware only runs its stock UI. There is no SDK, no sideloading, no custom watch app. Everything in this studio is built around what the hardware <em>does</em> expose, BLE commands, the motor, the sensors, and the watch\'s media buttons.</div>' +
         '<div class="frame-diagram" style="margin-top:18px">' +
@@ -1412,7 +1412,7 @@
         '<ul>' +
           '<li><b>True HR streaming.</b> Right now health is one-shot. If firmware 6.1.2 can be coaxed into a live push, or if the standard <code>0x2A37</code> characteristic appears, games can react to stress in real time instead of sampling between rounds.</li>' +
           '<li><b>Wallpaper / PAR.</b> The native encoder is the missing piece. Without it, custom dials stay blocked; with it, the watch could display generated art.</li>' +
-          '<li><b>OTA, carefully.</b> The OTA envelope and CRC-8 are documented, but flashing a $30 watch with a half-understood image is how you brick it. This stays read-only until there is a recovery path.</li>' +
+          '<li><b>OTA, carefully.</b> The OTA envelope and CRC-8 are documented, but flashing a $10 watch with a half-understood image is how you brick it. This stays read-only until there is a recovery path.</li>' +
           '<li><b>More input.</b> Wrist-shake works as a discrete event. A game that uses it as a deliberate “boost” gesture is the next experiment.</li>' +
           '<li><b>Mobile.</b> The studio is responsive, but the bridge is a Windows process. A phone-first companion is a different product decision.</li>' +
         '</ul>' +

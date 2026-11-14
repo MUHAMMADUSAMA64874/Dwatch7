@@ -4,7 +4,7 @@ Use this as source material for a LinkedIn post, talk, or write-up. Every number
 
 ## One-liner
 
-A $30 Chinese smartwatch had no SDK, no app store, no docs. Six months later it runs 20 browser games, a protocol lab, and live heart-rate / SpO2 / blood-pressure reads. No firmware was modified. No jailbreak. Just BLE, a media-key trick, and a lot of packet sniffing.
+A $10 Chinese smartwatch had no SDK, no app store, no docs. Six months later it runs 20 browser games, a protocol lab, and live heart-rate / SpO2 / blood-pressure reads. No firmware was modified. No jailbreak. Just BLE, a media-key trick, and a lot of packet sniffing.
 
 ## The device
 
@@ -88,7 +88,7 @@ Adding a game is three steps: copy `games/template.html`, write `update(g, dt)` 
 ## Two honest bits
 
 1. The "vibration motor" is a buzzer. It blocks the BLE link for 30-60s after one command, so it cannot be used as a real-time output. I removed haptics from the product and documented the buzzer as not usable instead of faking it.
-2. The ACK frame is 9 bytes with no checksum in the docs, 10 bytes with a checksum byte in the code. I left it alone until I can verify on hardware. Guessing on a $30 watch is how you brick it.
+2. The ACK frame is 9 bytes with no checksum in the docs, 10 bytes with a checksum byte in the code. I left it alone until I can verify on hardware. Guessing on a $10 watch is how you brick it.
 
 ## Numbers
 
@@ -123,7 +123,7 @@ Adding a game is three steps: copy `games/template.html`, write `update(g, dt)` 
 
 ## Suggested post shape (if you want one)
 
-Hook: "I bought a $30 Chinese smartwatch. It had no SDK. Six months later it runs 20 games."
+Hook: "I bought a $10 Chinese smartwatch. It had no SDK. Six months later it runs 20 games."
 
 Body: the six phases in 2-3 lines each, the breakthrough, the two honest bits.
 
