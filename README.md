@@ -2,10 +2,10 @@
 
 A reverse-engineered studio for the Chinese D Watch7: live BLE telemetry, a protocol lab, 20 browser games, and the full decoding story.
 
-![Retail box, front](docs/media/box-front.jpg)
-![Retail box, back](docs/media/box-back.jpg)
-![User manual](docs/media/manual.jpg)
-![Watch on the desk](docs/media/watch.jpg)
+![Retail box, front](docs/media/box-front.png)
+![Retail box, back](docs/media/box-back.png)
+![User manual](docs/media/manual.png)
+![Watch on the desk](docs/media/watch.png)
 
 ## Features
 

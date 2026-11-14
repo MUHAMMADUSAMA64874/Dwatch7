@@ -1,8 +1,8 @@
-Drop the four photos here, keeping these names:
+Photos for the README, kept here so the repo stays self-contained:
 
-- box-front.jpg   (retail box, front)
-- box-back.jpg    (retail box, back)
-- manual.jpg      (user manual / quick guide)
-- watch.jpg       (watch on the desk)
+- box-front.png  (retail box, front)
+- box-back.png   (retail box, back)
+- manual.png     (user manual / quick guide)
+- watch.png      (watch on the desk)
 
-Referenced by README.md. Any jpg/png/webp works; keep the names.
+Referenced by README.md. Replace any of them by overwriting the file (keep the name).
