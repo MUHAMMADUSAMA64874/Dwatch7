@@ -1,17 +1,21 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
+cd /d "%~dp0"
 
-REM Check if Python and dependencies are available
-python - <<END
-import subprocess, sys
-try:
-    import bleak, websockets
-    print("Python dependencies are installed.")
-except ImportError as e:
-    print(f"Missing dependency: {e}")
-    print("Install with: pip install -r requirements.txt")
-    sys.exit(1)
-END
+where python >nul 2>&1
+if errorlevel 1 (
+  echo Python 3 is not installed or not on PATH.
+  pause
+  exit /b 1
+)
 
-REM Launch the dashboard server
+python -c "import bleak, websockets" >nul 2>&1
+if errorlevel 1 (
+  echo Missing Python dependencies.
+  echo Install them with: pip install -r requirements.txt
+  pause
+  exit /b 1
+)
+
 python dashboard_server.py
+if errorlevel 1 pause

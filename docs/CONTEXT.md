@@ -1,9 +1,9 @@
 # DWatch 7 V2 — Project Context
 
 > **Historical snapshot (October 2026).** Paths below refer to the original research
-> workspace. In this repository the same material lives under `_archive/` (decompiled
-> source, APK, logs, captures) and `tools/ble/` (working probes). For the current
-> architecture see `README.md` and `DECODED.md`.
+> workspace. Working probes live under `tools/ble/`; the archived decompiled source, APK,
+> logs and captures are kept out of the repository. For the current architecture see
+> `README.md` and `DECODED.md`.
 
 ## Goal
 Fully reverse-engineer the Chinese **D Watch7** smartwatch (companion app **M2Wear**,

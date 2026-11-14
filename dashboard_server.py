@@ -1,11 +1,9 @@
 """
-D WATCH 7 — UNIFIED LAB & DASHBOARD SERVER
+D WATCH 7 - UNIFIED LAB & DASHBOARD SERVER
 ===========================================
 Single-entry backend combining:
-  1. HTTP Web Server (Port 8080): Serves dashboard.html, 3D assets, games, and tools.
-  2. Dual WebSocket Bridges (Ports 8780 & 8765):
-     - 8780: Used by dashboard.html, watch-dodge.html, wrist-bop.html.
-     - 8765: Used by motorcycle-alt.html, motorcycle.html, shake-dash.html.
+  1. HTTP Web Server (Port 8080): serves the studio shell, games, docs and themes.
+  2. WebSocket Bridge (Port 8780): drives the dashboard and every game.
   3. Windows SMTC Media Controls Listener:
      - Catches watch Music screen buttons (Previous, Play/Pause, Next) over "D Watch7-Audio".
      - Broadcasts button events to all connected games and dashboard in real-time.
@@ -13,7 +11,6 @@ Single-entry backend combining:
   4. Native Bleak BLE Bridge (C2:FC:01:BC:D4:1F):
      - Auto-connects and auto-reconnects in background.
      - Battery monitoring (GATT 0x2A19).
-     - Multi-pattern vibration haptics (CMD 0x06 key 0/15).
      - Push notifications to watch screen (CMD 0x0A key 0).
      - Dial / watch face switching (CMD 0x0B key 3).
      - Optical Heart Rate & Health sensor trigger/poll (CMD 0x06 key 4 / CMD 0x03 key 0).
@@ -33,6 +30,7 @@ import time
 import wave
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 try:
     from bleak import BleakClient, BleakScanner
@@ -73,8 +71,10 @@ CHAR_BAT = "00002a19-0000-1000-8000-00805f9b34fb"
 DEV_VER = 0x04
 
 HTTP_PORT = 8080
-WS_PORT_PRIMARY = 8780   # Dashboard, Watch Dodge, Wrist Bop
-WS_PORT_SECONDARY = 8765 # Motorcycle, Shake Dash
+WS_PORT = 8780
+# The studio exposes the BLE bridge with no auth, so listen on loopback only.
+# Pass --host 0.0.0.0 to share it on the LAN.
+BIND_HOST = "127.0.0.1"
 
 BUTTONS = {}
 if MEDIA_AVAILABLE:
@@ -101,17 +101,6 @@ for _c in "abcdefghijklmnopqrstuvwxyz0123456789":
     VK[_c] = ord(_c.upper())
 EXTENDED_KEYS = {"left", "up", "right", "down"}
 
-HAPTIC_PATTERNS = {
-    "tick":      [(50, 0)],
-    "coin":      [(30, 40), (30, 0)],
-    "hit":       [(220, 0)],
-    "crash":     [(200, 70), (380, 0)],
-    "start":     [(70, 80), (70, 80), (160, 0)],
-    "heartbeat": [(90, 80), (90, 80), (140, 0)],
-    "nitro":     [(350, 0)],
-    "gameover":  [(650, 0)],
-}
-
 # --- Shared State ---
 ROOT_DIR = Path(__file__).parent
 active_profile = "dodge"
@@ -126,18 +115,25 @@ last_battery = None
 last_hr_bpm = None
 last_spo2 = None
 last_bp = (None, None)
-last_hr_time = ""
 last_button_time = 0.0
 stats = {
     "presses": 0,
-    "vibrations": 0,
     "notifications": 0,
     "dial_switches": 0,
     "bp_requests": 0,
     "hr_requests": 0,
     "start_time": time.time(),
 }
-haptic_lock = asyncio.Lock()
+
+# Rate limiting
+WS_MSG_RATE_LIMIT = 20  # max messages per second per client
+ws_msg_counts = {}  # client -> [timestamps]
+
+# Circuit breaker for BLE
+ble_failure_count = 0
+ble_last_failure = 0.0
+BLE_MAX_FAILURES = 5
+BLE_RESET_WINDOW = 60.0  # seconds
 
 
 def log(prefix: str, msg: str):
@@ -226,7 +222,7 @@ def simulate_key(name: str, hold_ms: int):
 
 
 # --- WebSocket Broadcast ---
-async def broadcast_ws(payload: dict):
+async def broadcast_ws(payload: dict) -> None:
     if not ws_clients:
         return
     msg = json.dumps(payload)
@@ -282,7 +278,7 @@ def handle_button_press(button: str):
 
 def start_media_listener():
     if not MEDIA_AVAILABLE:
-        log("SMTC", "Windows media controls unavailable (winrt not installed). Wrist buttons disabled.")
+        log("SMTC", f"Windows media controls unavailable (winrt not installed). Wrist buttons disabled. ({_MEDIA_IMPORT_ERROR})")
         return None
     here = os.path.dirname(os.path.abspath(__file__))
     silence_path = os.path.join(here, "logs", "silence.wav")
@@ -325,32 +321,7 @@ def start_media_listener():
 
 
 # --- BLE Worker ---
-async def trigger_vibration(pattern: str = "hit", custom_ms: int = None):
-    global ble_client, ble_connected
-    if not ble_connected or not ble_client:
-        return False
-    async with haptic_lock:
-        try:
-            stats["vibrations"] += 1
-            if custom_ms:
-                await ble_client.write_gatt_char(CHAR_WR, build_df_frame(0x06, 0x00, bytes([0x01])), response=False)
-                await asyncio.sleep(custom_ms / 1000.0)
-                await ble_client.write_gatt_char(CHAR_WR, build_df_frame(0x06, 0x0F, bytes([0x01])), response=False)
-            else:
-                seq = HAPTIC_PATTERNS.get(pattern, [(150, 0)])
-                for on_ms, gap_ms in seq:
-                    await ble_client.write_gatt_char(CHAR_WR, build_df_frame(0x06, 0x00, bytes([0x01])), response=False)
-                    await asyncio.sleep(on_ms / 1000.0)
-                    await ble_client.write_gatt_char(CHAR_WR, build_df_frame(0x06, 0x0F, bytes([0x01])), response=False)
-                    if gap_ms:
-                        await asyncio.sleep(gap_ms / 1000.0)
-            return True
-        except Exception as e:
-            log("BLE", f"Vibration failed: {e}")
-            return False
-
-
-async def switch_dial(code: str):
+async def switch_dial(code: str) -> bool:
     global ble_client, ble_connected
     if not ble_connected or not ble_client:
         return False
@@ -367,7 +338,7 @@ async def switch_dial(code: str):
         return False
 
 
-async def send_raw_frame(cmd: int, key: int, payload: bytes, ver: int = DEV_VER):
+async def send_raw_frame(cmd: int, key: int, payload: bytes, ver: int = DEV_VER) -> bool:
     """Write an arbitrary DF frame, for the Protocol Lab raw console."""
     global ble_client, ble_connected
     if not BLE_AVAILABLE:
@@ -408,7 +379,7 @@ def build_time_payload(dt: datetime = None) -> bytes:
     ])
 
 
-async def sync_time():
+async def sync_time() -> bool:
     global ble_client, ble_connected
     if not ble_connected or not ble_client:
         await broadcast_ws({"type": "error", "message": "Watch is not connected; time sync skipped."})
@@ -427,7 +398,7 @@ async def sync_time():
         return False
 
 
-async def push_notification(app_name: str, title: str, content: str):
+async def push_notification(app_name: str, title: str, content: str) -> bool:
     global ble_client, ble_connected
     if not ble_connected or not ble_client:
         return False
@@ -443,7 +414,7 @@ async def push_notification(app_name: str, title: str, content: str):
         return False
 
 
-async def request_heart_rate():
+async def request_heart_rate() -> bool:
     global ble_client, ble_connected, stats
     stats["hr_requests"] = stats.get("hr_requests", 0) + 1
     # Broadcast to dashboard that optical sensor has started (beeping lights ON)
@@ -469,7 +440,7 @@ async def request_heart_rate():
         return False
 
 
-async def request_blood_pressure():
+async def request_blood_pressure() -> bool:
     global ble_client, ble_connected, stats
     stats["bp_requests"] = stats.get("bp_requests", 0) + 1
     # Broadcast to dashboard that BP optical sensor is active (beeping lights ON)
@@ -498,7 +469,7 @@ async def request_blood_pressure():
 
 
 def on_ble_notification(_sender, data: bytearray):
-    global ble_client, last_hr_bpm, last_spo2, last_bp, last_hr_time
+    global ble_client, last_hr_bpm, last_spo2, last_bp
     if len(data) < 7:
         return
 
@@ -564,7 +535,6 @@ def on_ble_notification(_sender, data: bytearray):
             now_str = datetime.now().strftime("%H:%M:%S")
             if hr["bpm"]:
                 last_hr_bpm = hr["bpm"]
-                last_hr_time = now_str
             if hr["spo2"]:
                 last_spo2 = hr["spo2"]
             if hr["bp_high"]:
@@ -591,18 +561,12 @@ def on_ble_notification(_sender, data: bytearray):
             }))
 
 
-async def _maintain_link(client):
+async def _maintain_link(client) -> None:
     """Bind, subscribe and hold the link open after a client is connected."""
     global ble_client, ble_connected, last_battery
     ble_client = client
     ble_connected = True
     log("BLE", "[+] Connected to D Watch7!")
-
-    # Immediate silence to any lingering vibration
-    try:
-        await client.write_gatt_char(CHAR_WR, build_df_frame(0x06, 0x0F, bytes([0x01])), response=False)
-    except Exception:
-        pass
 
     # Subscribe to notifications
     await client.start_notify(CHAR_NT, on_ble_notification)
@@ -623,7 +587,6 @@ async def _maintain_link(client):
     await broadcast_ws({
         "type": "status",
         "connected": True,
-        "vibration": True,
         "battery": last_battery,
     })
 
@@ -640,15 +603,25 @@ async def _maintain_link(client):
 
 
 async def ble_worker_loop():
-    global ble_client, ble_connected, last_battery
+    global ble_client, ble_connected, last_battery, ble_failure_count, ble_last_failure
     if not BLE_AVAILABLE:
-        log("BLE", "Bleak is not installed; running the studio without a watch bridge.")
-        await broadcast_ws({"type": "status", "connected": False, "vibration": False})
+        log("BLE", f"Bleak is not installed; running the studio without a watch bridge. ({_BLE_IMPORT_ERROR})")
+        await broadcast_ws({"type": "status", "connected": False})
         return
     log("BLE", f"Background worker initialized. Target: {WATCH_MAC}")
 
     while True:
         try:
+            # Circuit breaker check
+            now = time.time()
+            if ble_failure_count >= BLE_MAX_FAILURES:
+                if now - ble_last_failure < BLE_RESET_WINDOW:
+                    log("BLE", f"Circuit breaker open ({ble_failure_count} failures), waiting {BLE_RESET_WINDOW}s...")
+                    await asyncio.sleep(BLE_RESET_WINDOW)
+                    ble_failure_count = 0
+                else:
+                    ble_failure_count = 0  # Reset after window
+
             device = await BleakScanner.find_device_by_address(WATCH_MAC, timeout=5.0)
             if not device:
                 # The watch may be paired but not currently advertising. Fall back
@@ -663,31 +636,35 @@ async def ble_worker_loop():
                     pass
 
                 ble_connected = False
-                await broadcast_ws({"type": "status", "connected": False, "vibration": False})
+                await broadcast_ws({"type": "status", "connected": False})
                 await asyncio.sleep(4.0)
                 continue
 
             log("BLE", f"Found {device.name} ({WATCH_MAC}). Connecting...")
             async with BleakClient(device, timeout=25.0) as client:
                 await _maintain_link(client)
+                # Reset failure count on successful connection
+                ble_failure_count = 0
 
         except Exception as e:
             ble_connected = False
-            log("BLE", f"Link dropped: {e}. Reconnecting in 4s...")
-            await broadcast_ws({"type": "status", "connected": False, "vibration": False})
+            ble_failure_count += 1
+            ble_last_failure = time.time()
+            log("BLE", f"Link dropped: {e}. Reconnecting in 4s... (failures: {ble_failure_count})")
+            await broadcast_ws({"type": "status", "connected": False})
             await asyncio.sleep(4.0)
 
 
 # --- WebSocket Handler ---
-async def ws_handler(websocket):
-    global active_profile, keyboard_emulation_enabled, watch_button_triggers_bp
+async def ws_handler(websocket) -> None:
+    global active_profile, keyboard_emulation_enabled, watch_button_triggers_bp, ws_msg_counts
     ws_clients.add(websocket)
+    ws_msg_counts[websocket] = []
     try:
         # Initial greeting with state
         await websocket.send(json.dumps({
             "type": "status",
             "connected": ble_connected,
-            "vibration": ble_connected,
             "battery": last_battery,
             "profile": active_profile,
             "keyboard_emulation": keyboard_emulation_enabled,
@@ -699,16 +676,23 @@ async def ws_handler(websocket):
         }))
 
         async for raw_msg in websocket:
+            # Rate limiting
+            now = time.time()
+            ws_msg_counts[websocket] = [t for t in ws_msg_counts[websocket] if now - t < 1.0]
+            if len(ws_msg_counts[websocket]) >= WS_MSG_RATE_LIMIT:
+                await websocket.send(json.dumps({"type": "error", "message": "Rate limit exceeded"}))
+                continue
+            ws_msg_counts[websocket].append(now)
+
             try:
                 msg = json.loads(raw_msg)
+                if not isinstance(msg, dict):
+                    raise ValueError("Message must be an object")
                 mtype = msg.get("type")
+                if not isinstance(mtype, str):
+                    raise ValueError("Missing or invalid 'type'")
 
-                if mtype == "vibrate":
-                    p = msg.get("pattern", "hit")
-                    ms = msg.get("ms")
-                    asyncio.create_task(trigger_vibration(p, ms))
-
-                elif mtype == "set_dial":
+                if mtype == "set_dial":
                     code = msg.get("code", "0001")
                     asyncio.create_task(switch_dial(code))
 
@@ -776,18 +760,51 @@ async def ws_handler(websocket):
                 log("WS", f"Message parse error: {e}")
     finally:
         ws_clients.discard(websocket)
+        ws_msg_counts.pop(websocket, None)
 
 
 # --- HTTP Static Server ---
+class DashboardHTTPServer(http.server.ThreadingHTTPServer):
+    """Threaded server with a deep accept queue.
+
+    The stdlib default backlog is 5. A browser opening a handful of parallel
+    asset connections (and Playwright running several pages at once) can
+    overflow it, producing intermittent ECONNREFUSED on app.js / registry.js.
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 256
+
+
 class DashboardHTTPHandler(http.server.SimpleHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    # Drop idle keep-alive sockets so threads do not accumulate per tab.
+    timeout = 30
+
+    def handle(self):
+        # Browsers close keep-alive sockets abruptly; that is not an error worth
+        # a traceback in the console.
+        try:
+            super().handle()
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass
+
     def log_message(self, format, *args):
         # Silence routine asset requests
         pass
 
     def end_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline' https://use.fontawesome.com https://fonts.googleapis.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://use.fontawesome.com; font-src 'self' https://fonts.gstatic.com https://use.fontawesome.com; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:8780 ws://localhost:8780; frame-src 'self'")
         super().end_headers()
+
+    def translate_path(self, path):
+        # Never serve dotfiles (.git, .env) or their encoded variants.
+        clean = unquote(path.split("?", 1)[0])
+        if any(seg.startswith(".") and seg not in (".", "..") for seg in clean.split("/")):
+            return str(ROOT_DIR / "__forbidden__")
+        return super().translate_path(path)
 
     def do_GET(self):
         # Route all requests to the correct path
@@ -798,13 +815,13 @@ class DashboardHTTPHandler(http.server.SimpleHTTPRequestHandler):
 
 def start_http_server(port: int = HTTP_PORT):
     os.chdir(str(ROOT_DIR))
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), DashboardHTTPHandler)
+    server = DashboardHTTPServer((BIND_HOST, port), DashboardHTTPHandler)
     log("HTTP", f"Dashboard server running at: http://127.0.0.1:{port}")
     server.serve_forever()
 
 
 # --- Main Entry ---
-async def async_main():
+async def async_main() -> None:
     global async_loop
     async_loop = asyncio.get_running_loop()
 
@@ -812,8 +829,12 @@ async def async_main():
     http_thread = threading.Thread(target=start_http_server, args=(HTTP_PORT,), daemon=True)
     http_thread.start()
 
-    # Start Windows SMTC media keys listener
-    media_player_ref = start_media_listener()
+    # Start Windows SMTC media keys listener; the studio still works without it
+    try:
+        media_player_ref = start_media_listener()
+    except Exception as e:
+        log("SMTC", f"Media listener failed to start: {e}")
+        media_player_ref = None
 
     print("\n" + "=" * 65)
     print("  WRISTLAB — D WATCH 7 DECODED STUDIO")
@@ -831,20 +852,23 @@ async def async_main():
             await asyncio.Event().wait()
         return
 
-    # Start WebSocket servers on both ports
-    log("WS", f"WebSocket Bridge listening on ws://127.0.0.1:{WS_PORT_PRIMARY} and ws://127.0.0.1:{WS_PORT_SECONDARY}")
-    ws_primary = await websockets.serve(ws_handler, "0.0.0.0", WS_PORT_PRIMARY)
-    ws_secondary = await websockets.serve(ws_handler, "0.0.0.0", WS_PORT_SECONDARY)
+    # Start the WebSocket bridge
+    log("WS", f"WebSocket Bridge listening on ws://127.0.0.1:{WS_PORT}")
+    ws_server = await websockets.serve(ws_handler, BIND_HOST, WS_PORT)
 
-    # Run BLE worker alongside WebSocket servers
+    # Run BLE worker alongside the WebSocket server
     await asyncio.gather(
         ble_worker_loop(),
-        ws_primary.wait_closed(),
-        ws_secondary.wait_closed(),
+        ws_server.wait_closed(),
     )
 
 
 def main():
+    global BIND_HOST
+    parser = argparse.ArgumentParser(description="WristLab: D Watch 7 decoded studio")
+    parser.add_argument("--host", default=BIND_HOST,
+                        help="interface to bind (default 127.0.0.1; use 0.0.0.0 to expose it on the LAN)")
+    BIND_HOST = parser.parse_args().host
     try:
         asyncio.run(async_main())
     except KeyboardInterrupt:

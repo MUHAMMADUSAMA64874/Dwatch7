@@ -1,0 +1,493 @@
+/* Hallmark · theme: Arcade · layer: components · scope: body[data-route="arcade"]
+ * A cabinet you step into: ember press surfaces, acid offsets, a CRT grille over the art,
+ * ticket-stub figures and a marquee head. Component-level only; tokens live in tokens.css.
+ */
+
+/* ------------------------------------------------------------------
+   The screen itself: a fixed CRT grille under everything
+   ------------------------------------------------------------------ */
+body[data-route="arcade"] {
+  scrollbar-color: var(--color-muted) var(--color-paper);
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      color-mix(in oklab, var(--color-crt-r) 4%, transparent) 0 1px,
+      color-mix(in oklab, var(--color-crt-g) 4%, transparent) 1px 2px,
+      color-mix(in oklab, var(--color-crt-b) 4%, transparent) 2px 3px
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0 2px,
+      color-mix(in oklab, var(--color-shade) 18%, transparent) 2px 3px
+    );
+  background-attachment: fixed;
+}
+
+body[data-route="arcade"] ::selection {
+  background: color-mix(in oklab, var(--color-accent) 30%, transparent);
+  color: var(--color-ink);
+}
+
+/* ------------------------------------------------------------------
+   Headings: marquee type with the RGB split
+   ------------------------------------------------------------------ */
+body[data-route="arcade"] .page-head h1 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(3rem, 5.5vw, 5rem);
+  line-height: 0.98;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  text-shadow:
+    -1.5px 0 0 var(--color-crt-r),
+    1.5px 0 0 var(--color-crt-c);
+}
+
+body[data-route="arcade"] .page-head .lead {
+  color: var(--color-ink-2);
+  max-width: 62ch;
+}
+
+body[data-route="arcade"] .section-head h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(1.75rem, 2.6vw, 2.75rem);
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+body[data-route="arcade"] .section-head .mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+}
+
+/* The count on the right of the head, ruled like a ticket stub */
+body[data-route="arcade"] .lib-stat {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  padding: var(--space-2) 0 var(--space-2) var(--space-5);
+  border-block: var(--rule-bar) solid var(--color-rule);
+}
+
+body[data-route="arcade"] .lib-stat b {
+  font-family: var(--font-mono);
+  font-size: clamp(2.25rem, 3vw, 3rem);
+  line-height: 1;
+  color: var(--color-accent);
+}
+
+body[data-route="arcade"] .lib-stat span {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+
+/* ------------------------------------------------------------------
+   Press surfaces: every control is a physical button
+   ------------------------------------------------------------------ */
+body[data-route="arcade"] .btn {
+  min-height: 44px;
+  padding: 0 var(--space-5);
+  border: var(--rule-bar) solid var(--color-ink);
+  border-radius: var(--radius-card);
+  background: var(--color-paper-2);
+  color: var(--color-ink);
+  font-family: var(--font-body);
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  box-shadow: var(--shadow-card);
+  transition:
+    translate var(--dur-micro) var(--ease-out),
+    box-shadow var(--dur-micro) var(--ease-out),
+    background-color var(--dur-micro) var(--ease-out),
+    color var(--dur-micro) var(--ease-out);
+}
+
+body[data-route="arcade"] .btn:hover {
+  translate: -2px -2px;
+  box-shadow: 8px 8px 0 var(--color-accent-2);
+  background: var(--hm-ember-hover);
+  color: var(--color-accent-ink);
+}
+
+body[data-route="arcade"] .btn:active {
+  translate: 3px 3px;
+  box-shadow: 2px 2px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .btn-primary {
+  background: var(--color-accent);
+  border-color: var(--color-ink);
+  color: var(--color-accent-ink);
+}
+
+body[data-route="arcade"] .btn-primary:hover {
+  background: var(--hm-ember-hover);
+  color: var(--color-accent-ink);
+}
+
+body[data-route="arcade"] .btn-secondary {
+  background: var(--color-paper-2);
+  border-color: var(--color-ink);
+  color: var(--color-ink);
+}
+
+body[data-route="arcade"] .btn-secondary:hover {
+  background: var(--color-accent);
+  border-color: var(--color-ink);
+  color: var(--color-accent-ink);
+}
+
+body[data-route="arcade"] .btn-sm {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  box-shadow: 4px 4px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .btn-sm:hover {
+  translate: -1px -1px;
+  box-shadow: 5px 5px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .chip {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border: var(--rule-bar) solid var(--color-rule-2);
+  border-radius: var(--radius-card);
+  background: var(--color-paper-2);
+  color: var(--color-ink-2);
+  font-weight: 700;
+  transition:
+    translate var(--dur-micro) var(--ease-out),
+    box-shadow var(--dur-micro) var(--ease-out),
+    background-color var(--dur-micro) var(--ease-out),
+    color var(--dur-micro) var(--ease-out),
+    border-color var(--dur-micro) var(--ease-out);
+}
+
+body[data-route="arcade"] .chip:hover {
+  border-color: var(--color-ink);
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+body[data-route="arcade"] .chip.active {
+  background: var(--color-accent);
+  border-color: var(--color-ink);
+  color: var(--color-accent-ink);
+  box-shadow: 3px 3px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .search {
+  min-height: 44px;
+  border: var(--rule-bar) solid var(--color-field);
+  border-radius: var(--radius-card);
+  background: var(--color-paper-2);
+  transition: border-color var(--dur-micro) var(--ease-out), box-shadow var(--dur-micro) var(--ease-out);
+}
+
+body[data-route="arcade"] .search:focus-within {
+  border-color: var(--color-ink);
+  box-shadow: 4px 4px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .search input {
+  height: 40px;
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+body[data-route="arcade"] .search input::placeholder {
+  color: var(--color-dim);
+}
+
+/* ------------------------------------------------------------------
+   The library: cards as cabinet marquees
+   ------------------------------------------------------------------ */
+body[data-route="arcade"] .game-card {
+  border: var(--rule-bar) solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper-2);
+  box-shadow: 0 0 0 color-mix(in oklab, var(--color-accent-2) 0%, transparent);
+  transition:
+    translate var(--dur-micro) var(--ease-out),
+    box-shadow var(--dur-micro) var(--ease-out),
+    border-color var(--dur-micro) var(--ease-out),
+    background-color var(--dur-micro) var(--ease-out);
+}
+
+body[data-route="arcade"] .game-card:hover {
+  translate: -3px -3px;
+  border-color: var(--color-ink);
+  background: var(--color-paper);
+  box-shadow: 8px 8px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .game-card:has(.card-link:focus-visible) {
+  border-color: var(--color-focus);
+  box-shadow: 8px 8px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .game-card:active {
+  translate: 2px 2px;
+  box-shadow: 2px 2px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .thumb {
+  border-bottom: var(--rule-bar) solid var(--color-rule);
+  background:
+    radial-gradient(120% 90% at 50% 0%, var(--color-accent-soft), transparent 70%),
+    var(--color-paper-3);
+}
+
+/* the grille over the art, never in front of the pointer */
+body[data-route="arcade"] .thumb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(
+      to right,
+      color-mix(in oklab, var(--color-crt-r) 7%, transparent) 0 1px,
+      color-mix(in oklab, var(--color-crt-g) 7%, transparent) 1px 2px,
+      color-mix(in oklab, var(--color-crt-b) 7%, transparent) 2px 3px
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0 2px,
+      color-mix(in oklab, var(--color-shade) 22%, transparent) 2px 3px
+    );
+  opacity: 0.55;
+}
+
+body[data-route="arcade"] .thumb-icon {
+  color: var(--color-accent);
+  filter: drop-shadow(0 0 18px color-mix(in oklab, var(--color-accent) 45%, transparent));
+}
+
+body[data-route="arcade"] .game-card:hover .thumb-icon {
+  color: var(--color-accent-2);
+}
+
+body[data-route="arcade"] .thumb-num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--color-accent-2);
+}
+
+body[data-route="arcade"] .tbadge {
+  border: 1px solid var(--color-rule-2);
+  border-radius: 3px;
+  background: var(--color-paper-3);
+  color: var(--color-ink-2);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+
+body[data-route="arcade"] .tbadge.hot {
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  border-color: var(--color-ink);
+}
+
+body[data-route="arcade"] .thumb-play {
+  border: var(--rule-bar) solid var(--color-ink);
+  border-radius: 3px;
+  background: var(--color-accent-2);
+  color: var(--color-accent-2-ink);
+  font-family: var(--font-body);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+body[data-route="arcade"] .game-title {
+  font-family: var(--font-body);
+  font-weight: 900;
+  font-size: var(--text-base);
+  letter-spacing: -0.01em;
+}
+
+body[data-route="arcade"] .game-tagline {
+  color: var(--color-muted);
+}
+
+body[data-route="arcade"] .gtag {
+  border: 1px solid var(--color-rule);
+  border-radius: 3px;
+  color: var(--color-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+body[data-route="arcade"] .game-foot {
+  border-top: var(--rule-bar) solid var(--color-rule);
+}
+
+body[data-route="arcade"] .game-controls,
+body[data-route="arcade"] .game-play {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+body[data-route="arcade"] .game-play {
+  color: var(--color-accent);
+}
+
+/* ------------------------------------------------------------------
+   Featured run: the ember field
+   ------------------------------------------------------------------ */
+body[data-route="arcade"] .featured {
+  border: var(--rule-bar) solid var(--color-rule);
+  border-radius: var(--radius-card);
+  background: var(--color-paper-2);
+  box-shadow: 8px 8px 0 color-mix(in oklab, var(--color-accent-2) 28%, transparent);
+}
+
+body[data-route="arcade"] .featured-art {
+  border-left: var(--rule-bar) solid var(--color-rule);
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0 3px,
+      color-mix(in oklab, var(--color-shade) 20%, transparent) 3px 4px
+    ),
+    var(--color-accent);
+}
+
+body[data-route="arcade"] .featured-icon {
+  color: var(--color-accent-ink);
+  opacity: 0.85;
+}
+
+body[data-route="arcade"] .featured-badge {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+body[data-route="arcade"] .featured h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: clamp(2rem, 3.4vw, 3rem);
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  text-shadow:
+    -1px 0 0 var(--color-crt-r),
+    1px 0 0 var(--color-crt-c);
+}
+
+body[data-route="arcade"] .featured p {
+  color: var(--color-ink-2);
+  font-size: var(--text-sm);
+}
+
+body[data-route="arcade"] .featured .badge {
+  border: 1px solid var(--color-rule-2);
+  border-radius: 3px;
+  background: var(--color-paper-3);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ------------------------------------------------------------------
+   The closing statement: an ember band
+   ------------------------------------------------------------------ */
+body[data-route="arcade"] .callout {
+  padding: var(--space-6);
+  border: var(--rule-bar) solid var(--color-ink);
+  border-radius: var(--radius-card);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  box-shadow: 8px 8px 0 var(--color-accent-2);
+}
+
+body[data-route="arcade"] .callout b {
+  color: var(--color-accent-ink);
+}
+
+body[data-route="arcade"] .callout code {
+  background: color-mix(in oklab, var(--color-accent-ink) 12%, transparent);
+  color: var(--color-accent-ink);
+  border-radius: 3px;
+  padding: 2px var(--space-1);
+}
+
+/* ------------------------------------------------------------------
+   Footer: the mast
+   ------------------------------------------------------------------ */
+body[data-route="arcade"] .foot {
+  border-top: var(--rule-bar) solid var(--color-rule);
+  margin-top: var(--hm-gap);
+}
+
+body[data-route="arcade"] .foot > span:first-child {
+  font-family: var(--font-display);
+  font-size: clamp(1.75rem, 3vw, 2.75rem);
+  line-height: 1;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+body[data-route="arcade"] .foot a {
+  color: var(--color-accent-2);
+}
+
+body[data-route="arcade"] .foot a:hover {
+  color: var(--color-ink);
+}
+
+/* ------------------------------------------------------------------
+   Small screens and reduced motion
+   ------------------------------------------------------------------ */
+@media (max-width: 40rem) {
+  body[data-route="arcade"] .page-head h1 {
+    font-size: clamp(2.25rem, 10vw, 3rem);
+  }
+
+  body[data-route="arcade"] .lib-stat {
+    padding-left: var(--space-3);
+  }
+
+  body[data-route="arcade"] .callout {
+    padding: var(--space-4);
+    box-shadow: 5px 5px 0 var(--color-accent-2);
+  }
+
+  body[data-route="arcade"] .foot > span:first-child {
+    font-size: 1.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body[data-route="arcade"] .btn,
+  body[data-route="arcade"] .btn:hover,
+  body[data-route="arcade"] .btn:active,
+  body[data-route="arcade"] .chip,
+  body[data-route="arcade"] .game-card,
+  body[data-route="arcade"] .game-card:hover,
+  body[data-route="arcade"] .game-card:active {
+    transition: none;
+    translate: none;
+  }
+}

@@ -6,9 +6,13 @@ __pycache__/
 *.pyc
 .playwright-mcp/
 
-# Runtime logs (logs/silence.wav is a shipped asset, keep the folder tracked)
+# Runtime logs (silence.wav is created on first start)
 logs/*.log
+logs/silence.wav
 *.log
+
+# Tool checkouts / local skill installs
+ponytail/
 
 # OS / editor noise
 .DS_Store

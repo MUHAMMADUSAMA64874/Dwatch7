@@ -1,0 +1,69 @@
+/* Hallmark · shape: Marquee Hero (a night bill) · genre: playful · theme: Arcade (by request) · job: play
+ * adapted: WristLab arcade route. The palette stays ember/acid over a violet-black cabinet,
+ * the type turns to Bungee / Chivo / Silkscreen, and every control becomes a press surface.
+ * scope: body[data-route="arcade"] so the rest of the studio keeps its Console skin.
+ * tokens only, no layout. Component rules live in arcade.css.
+ */
+
+body[data-route="arcade"] {
+  color-scheme: dark;
+
+  /* Surfaces: the cabinet, the well, the deck */
+  --color-paper: oklch(16% 0.035 312);
+  --color-paper-2: oklch(20% 0.04 312);
+  --color-paper-3: oklch(12.5% 0.03 312);
+  --color-paper-rgb: 22, 16, 27;
+  --color-panel-rgb: 33, 25, 39;
+
+  /* Ink */
+  --color-ink: oklch(96% 0.012 315);
+  --color-ink-2: oklch(88% 0.016 315);
+  --color-muted: oklch(72% 0.022 315);
+  --color-dim: oklch(64% 0.026 315);
+  --color-ink-rgb: 245, 240, 248;
+  --color-muted-rgb: 176, 164, 184;
+
+  /* Rules */
+  --color-rule: oklch(35% 0.05 312);
+  --color-rule-2: oklch(46% 0.06 312);
+  --color-rule-rgb: 66, 52, 74;
+  --color-field: oklch(56% 0.035 312);
+
+  /* Accents: ember press surface + acid offset (Hallmark Arcade) */
+  --color-arcade: oklch(68% 0.21 40);
+  --color-arcade-rgb: 255, 122, 54;
+  --color-arcade-ink: oklch(14% 0.04 312);
+  --color-arcade-soft: oklch(24% 0.07 40);
+
+  --color-accent: var(--color-arcade);
+  --color-accent-rgb: var(--color-arcade-rgb);
+  --color-accent-ink: var(--color-arcade-ink);
+  --color-accent-soft: var(--color-arcade-soft);
+  --color-accent-2: oklch(90% 0.19 115);
+  --color-accent-2-ink: oklch(16% 0.05 115);
+  --color-focus: oklch(90% 0.19 115);
+
+  /* CRT fringing + grille */
+  --color-crt-r: oklch(64% 0.24 25);
+  --color-crt-g: oklch(80% 0.25 140);
+  --color-crt-b: oklch(60% 0.24 265);
+  --color-crt-c: oklch(80% 0.14 200);
+  --color-shade: oklch(7% 0.02 315);
+
+  /* Type: Bungee display, Chivo body, Silkscreen figures */
+  --font-display: 'Bungee', 'Impact', ui-sans-serif, sans-serif;
+  --font-body: 'Chivo', 'Host Grotesk', ui-sans-serif, sans-serif;
+  --font-mono: 'Silkscreen', 'Atkinson Hyperlegible Mono', ui-monospace, monospace;
+  --tracking-display: 0;
+
+  /* Shape: hard corners, thick rules, offset shadows */
+  --radius-card: 5px;
+  --radius-control: 4px;
+  --rule-bar: 2px;
+  --shadow-card: 6px 6px 0 var(--color-accent-2);
+  --hm-ember-hover: color-mix(in oklab, var(--color-accent) 86%, var(--color-ink));
+
+  /* Section rhythm borrowed from the Hallmark arcade stamp */
+  --hm-gap-s: clamp(24px, 3vw, 40px);
+  --hm-gap: clamp(40px, 5vw, 72px);
+}

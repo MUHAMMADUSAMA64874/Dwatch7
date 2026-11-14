@@ -247,13 +247,6 @@
       }
       return false;
     }
-    haptic(pattern) {
-      if (this.send({ type: 'vibrate', pattern })) return;
-      if (navigator.vibrate) {
-        const map = { tick: 25, coin: [20, 40, 20], hit: 120, crash: [120, 60, 200], start: [50, 60, 50], heartbeat: [50, 60, 50], nitro: 280, gameover: 400 };
-        navigator.vibrate(map[pattern] || 40);
-      }
-    }
   }
 
   /* ------------------------------------------------------------------ */
@@ -273,7 +266,6 @@
       this.tilt = { x: 0, y: 0, z: 0 };
       this.watch = { online: false, battery: null, hr: null, spo2: null, bp: null };
       this.detail = '';
-      this._hapticAt = 0;
       this.audio = new Sound();
       this.storage = {
         get: (k, d) => LS.get(this.def.id + '_' + k, d),
@@ -394,7 +386,7 @@
       const dot = this.root && this.root.querySelector('#wgDot');
       if (dot) {
         dot.classList.toggle('on', !!on);
-        dot.title = on ? 'Watch bridge online — wrist controls + haptics live' : 'Watch bridge offline — keyboard / pointer controls active';
+        dot.title = on ? 'Watch bridge online, wrist buttons live' : 'Watch bridge offline, keyboard / pointer controls active';
       }
     }
 
@@ -571,12 +563,9 @@
     pressed(a) { return this.keys.has(a); }
 
     /* ---------------- Haptics / FX ---------------- */
-    haptic(pattern = 'tick') {
-      const now = performance.now();
-      if (now - this._hapticAt < 45) return;
-      this._hapticAt = now;
-      if (this.bridge) this.bridge.haptic(pattern);
-    }
+    // The watch's motor is a slow buzzer that blocks the next BLE command, so vibration
+    // is not a usable output. Kept as a no-op so the 99 existing game call sites still run.
+    haptic() {}
     shake(amount = 6, dur = 0.25) {
       this.shakeAmp = Math.max(this.shakeAmp, amount);
       this.shakeT = Math.max(this.shakeT, dur);
@@ -744,20 +733,17 @@
   *{box-sizing:border-box}
   html,body{height:100%;margin:0}
   .wg-body{background:#06070a;color:#f4f1e8;font-family:'Bricolage Grotesque','Segoe UI',sans-serif;overflow:hidden}
-  .wg-root{height:100vh;height:100dvh;display:flex;flex-direction:column;
-    background:
-      radial-gradient(1200px 700px at 50% -10%, color-mix(in srgb, var(--wg-accent) 12%, transparent), transparent 60%),
-      #06070a;}
+  .wg-root{height:100vh;height:100dvh;display:flex;flex-direction:column;background:#06070a;}
   .wg-bar{height:56px;flex:0 0 56px;display:flex;align-items:center;gap:18px;padding:0 18px;
-    border-bottom:1px solid rgba(244,241,232,.09);background:rgba(9,10,13,.72);backdrop-filter:blur(14px);z-index:5}
+    border-bottom:1px solid rgba(244,241,232,.09);background:#090a0d;z-index:5}
   .wg-embed .wg-bar{display:none}
   .wg-embed .wg-canvas{border-radius:10px}
   .wg-back{display:flex;align-items:center;gap:7px;text-decoration:none;color:#9aa0a8;
     font-family:'IBM Plex Mono',monospace;font-size:11px;letter-spacing:.08em;padding:7px 10px;border-radius:8px;border:1px solid transparent}
   .wg-back:hover{color:#f4f1e8;border-color:rgba(244,241,232,.12);background:rgba(255,255,255,.03)}
   .wg-id{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
-  .wg-dot{width:8px;height:8px;border-radius:50%;background:#3a3f46;flex:0 0 8px;box-shadow:0 0 0 0 rgba(0,0,0,0)}
-  .wg-dot.on{background:var(--wg-accent);box-shadow:0 0 12px var(--wg-accent)}
+  .wg-dot{width:8px;height:8px;border-radius:50%;background:#3a3f46;flex:0 0 8px}
+  .wg-dot.on{background:var(--wg-accent)}
   .wg-name{font-weight:700;font-size:15px;letter-spacing:.01em;white-space:nowrap}
   .wg-tag{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#7b828c;letter-spacing:.08em;text-transform:uppercase;
     white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -771,18 +757,13 @@
   .wg-btn:hover{background:rgba(255,255,255,.08);color:#fff;border-color:rgba(244,241,232,.24)}
   .wg-btn.off{opacity:.5}
   .wg-stage{position:relative;flex:1;min-height:0;display:grid;place-items:center;overflow:hidden}
-  .wg-canvas{display:block;border-radius:14px;background:#08090b;
-    box-shadow:0 30px 90px rgba(0,0,0,.65),0 0 0 1px rgba(244,241,232,.09),0 0 90px color-mix(in srgb,var(--wg-accent) 10%,transparent);
-    touch-action:none}
-  .wg-vignette{position:absolute;inset:0;pointer-events:none;
-    background:radial-gradient(ellipse at center,transparent 55%,rgba(3,4,6,.55) 100%)}
-  .wg-overlay{position:absolute;inset:0;display:grid;place-items:center;padding:24px;opacity:0;pointer-events:none;transition:opacity .22s}
-  .wg-overlay.show{opacity:1;pointer-events:auto;background:rgba(4,5,8,.45);backdrop-filter:blur(5px)}
-  .wg-panel{width:min(560px,92vw);padding:34px 34px 30px;border-radius:20px;text-align:center;
-    background:linear-gradient(180deg,rgba(20,23,28,.96),rgba(11,13,17,.98));
-    border:1px solid rgba(244,241,232,.12);box-shadow:0 40px 120px rgba(0,0,0,.7);
-    animation:wgIn .35s cubic-bezier(.2,.8,.2,1) both}
-  @keyframes wgIn{from{transform:translateY(14px) scale(.98);opacity:0}to{transform:none;opacity:1}}
+  .wg-canvas{display:block;border-radius:12px;background:#08090b;border:1px solid rgba(244,241,232,.08);touch-action:none}
+  .wg-vignette{display:none}
+  .wg-overlay{position:absolute;inset:0;display:grid;place-items:center;padding:24px;opacity:0;pointer-events:none;transition:opacity .18s}
+  .wg-overlay.show{opacity:1;pointer-events:auto;background:rgba(4,5,8,.6)}
+  .wg-panel{width:min(560px,92vw);padding:32px;border-radius:14px;text-align:center;
+    background:#101319;border:1px solid rgba(244,241,232,.1);animation:wgIn .18s ease both}
+  @keyframes wgIn{from{opacity:0}to{opacity:1}}
   .wg-kicker{font-family:'IBM Plex Mono',monospace;font-size:10px;letter-spacing:.2em;color:var(--wg-accent);margin-bottom:14px}
   .wg-panel h1{font-size:clamp(30px,5vw,46px);line-height:.98;margin:0 0 12px;letter-spacing:-.03em;font-weight:800}
   .wg-sub{color:#a6acb5;font-size:14px;line-height:1.55;margin:0 auto 20px;max-width:42ch}
@@ -793,17 +774,16 @@
   .wg-chip b{color:var(--wg-accent);font-weight:600}
   .wg-tips{text-align:left;margin:0 auto 20px;padding-left:18px;color:#8f969f;font-size:12.5px;line-height:1.7;max-width:44ch}
   .wg-tips li::marker{color:var(--wg-accent)}
-  .wg-play{margin-top:4px;padding:14px 34px;border-radius:12px;border:0;cursor:pointer;
-    font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;letter-spacing:.16em;
-    color:#0a0b0d;background:var(--wg-accent);box-shadow:0 0 0 1px color-mix(in srgb,var(--wg-accent) 60%,#fff),0 14px 40px color-mix(in srgb,var(--wg-accent) 30%,transparent);
-    transition:.16s}
-  .wg-play:hover{transform:translateY(-2px);filter:brightness(1.08)}
-  .wg-play:active{transform:translateY(0)}
+  .wg-play{margin-top:4px;padding:12px 28px;border-radius:10px;border:1px solid color-mix(in srgb,var(--wg-accent) 45%,transparent);cursor:pointer;
+    font-family:'IBM Plex Mono',monospace;font-size:12px;font-weight:600;letter-spacing:.14em;
+    color:#0a0b0d;background:var(--wg-accent);transition:background-color .15s,border-color .15s}
+  .wg-play:hover{filter:brightness(1.05)}
+  .wg-play:active{filter:brightness(.98)}
   .wg-hint{margin-top:18px;font-family:'IBM Plex Mono',monospace;font-size:10px;color:#6f7680;letter-spacing:.03em}
   .wg-hint b{color:#c9ced6}
   .wg-hint a{color:var(--wg-accent);text-decoration:none}
   .wg-bigscore{font-family:'IBM Plex Mono',monospace;font-size:clamp(56px,10vw,92px);font-weight:600;line-height:1;
-    color:var(--wg-accent);text-shadow:0 0 40px color-mix(in srgb,var(--wg-accent) 35%,transparent);margin:8px 0 10px}
+    color:var(--wg-accent);margin:8px 0 10px}
   @media (max-width:720px){
     .wg-bar{gap:10px;padding:0 10px}
     .wg-tag{display:none}.wg-back-txt{display:none}
