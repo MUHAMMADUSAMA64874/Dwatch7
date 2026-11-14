@@ -116,6 +116,7 @@ last_hr_bpm = None
 last_spo2 = None
 last_bp = (None, None)
 last_button_time = 0.0
+last_button = None
 stats = {
     "presses": 0,
     "notifications": 0,
@@ -238,11 +239,12 @@ async def broadcast_ws(payload: dict) -> None:
 
 # --- Media Controls (SMTC) ---
 def handle_button_press(button: str):
-    global last_button_time
+    global last_button_time, last_button
     now = time.monotonic()
     if now - last_button_time < 0.05:  # Debounce accidental doubles
         return
     last_button_time = now
+    last_button = button
     stats["presses"] += 1
 
     log("SMTC", f"Watch Button: {button.upper()}")
@@ -673,6 +675,7 @@ async def ws_handler(websocket) -> None:
             "heartrate": last_hr_bpm,
             "spo2": last_spo2,
             "bp": last_bp,
+            "last_button": last_button,
         }))
 
         async for raw_msg in websocket:
@@ -692,7 +695,7 @@ async def ws_handler(websocket) -> None:
                 if not isinstance(mtype, str):
                     raise ValueError("Missing or invalid 'type'")
 
-                if mtype == "set_dial":
+                elif mtype == "set_dial":
                     code = msg.get("code", "0001")
                     asyncio.create_task(switch_dial(code))
 

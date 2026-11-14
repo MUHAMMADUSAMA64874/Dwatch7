@@ -298,6 +298,7 @@
       if (m.measuring) toast(label + ' measuring', 'Hold still while the optical sensor runs.', 'info');
     } else if (m.type === 'button') {
       logLine('rx', 'Button, ' + (m.button || '?') + ', ' + (m.source || 'watch'));
+      $$('[data-live="lastButton"]').forEach(n => { n.textContent = m.button || '?'; });
     } else if (m.type === 'notification_sent') {
       logLine('tx', 'Notification sent, ' + (m.title || '') + ' ' + (m.content || ''));
     } else if (m.type === 'dial_applied') {
@@ -1036,6 +1037,13 @@
           '<div class="live-row"><span class="k">Device</span><span class="v mono" style="font-size:var(--text-xs)">D Watch 7</span></div>' +
           '<div class="live-row"><span class="k">Firmware</span><span class="v">6.1.2, ver 0x04</span></div>' +
           '<div class="live-row"><span class="k">MAC</span><span class="v mono" style="font-size:var(--text-xs)">C2:FC:01:BC:D4:1F</span></div>' +
+          '<div class="live-row"><span class="k">Last watch button</span><span class="v mono" style="font-size:var(--text-xs)" data-live="lastButton">none</span></div>' +
+          '<div class="field-row" style="margin-top:14px">' +
+            '<button class="btn btn-secondary btn-sm" id="simLeft">Sim left</button>' +
+            '<button class="btn btn-secondary btn-sm" id="simAction">Sim action</button>' +
+            '<button class="btn btn-secondary btn-sm" id="simRight">Sim right</button>' +
+          '</div>' +
+          '<p class="hint" style="margin-top:8px">Use these to test the browser side without the watch. If they move the game, the chain from server to browser works.</p>' +
           '<div class="live-row"><span class="k">Keyboard profile</span><span class="v" data-live="profile">--</span></div>' +
           '<div class="field-row" style="margin-top:14px">' +
             '<button class="btn btn-primary btn-sm" id="labReconnect2">Reconnect</button>' +
@@ -1129,6 +1137,14 @@
     const hr = $('#labHr'); if (hr) hr.addEventListener('click', requestHr);
     const bp = $('#labBp'); if (bp) bp.addEventListener('click', requestBp);
     const sync = $('#labSync'); if (sync) sync.addEventListener('click', syncTime);
+
+    ['left', 'action', 'right'].forEach(btn => {
+      const el = $('#sim' + btn.charAt(0).toUpperCase() + btn.slice(1));
+      if (el) el.addEventListener('click', () => {
+        if (send({ type: 'simulate_button', button: btn })) logLine('tx', 'Simulate button, ' + btn);
+        else needsBridge();
+      });
+    });
 
     const notify = $('#labNotify');
     if (notify) notify.addEventListener('click', () => {

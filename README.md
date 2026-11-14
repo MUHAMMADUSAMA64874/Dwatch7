@@ -67,6 +67,18 @@ The arcade, search, filters, high scores and manager pick it up automatically.
 
 `docs/PROTOCOL.md` (master protocol), `docs/WATCH_SPEC.md` (hardware, evidence-graded), `docs/MERGED_PROTOCOL_AND_FINDINGS.md`, `docs/OTA.md`, `docs/CONTEXT.md`, `DECODED.md`.
 
+## Watch buttons not responding?
+
+The watch sends its three media buttons (Prev / Play / Next) over AVRCP to a Windows media player. The studio registers itself as "D Watch7 Lab". If pressing a button does nothing:
+
+1. Open the watch's Music screen (buttons only emit there).
+2. Make sure the watch is paired to this PC as an audio device.
+3. In the Protocol Lab, click **Sim left / Sim action / Sim right**. If those move the game, the server-to-browser chain is fine and the issue is watch-to-PC pairing.
+4. Check the server console for `Watch Button:` lines. If none appear, Windows is not delivering the media key to "D Watch7 Lab" — close other media players (Spotify, etc.) and retry.
+5. The watch button action defaults to "game" (media keys → left/action/right). In BP mode it triggers a blood-pressure read instead.
+
+MIT. Reverse-engineered, not redistributed firmware.
+
 ## License
 
 MIT. Reverse-engineered, not redistributed firmware.
