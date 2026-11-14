@@ -4,10 +4,10 @@ A reverse-engineered studio for the Chinese D Watch7: live BLE telemetry, a prot
 
 <table>
   <tr>
-    <td><img src="docs/media/box-front.png" width="220" alt="Retail box, front"></td>
-    <td><img src="docs/media/box-back.png" width="220" alt="Retail box, back"></td>
-    <td><img src="docs/media/manual.png" width="220" alt="User manual"></td>
-    <td><img src="docs/media/watch.png" width="220" alt="Watch on the desk"></td>
+    <td><img src="docs/media/box-front.webp" width="220" alt="Retail box, front"></td>
+    <td><img src="docs/media/box-back.webp" width="220" alt="Retail box, back"></td>
+    <td><img src="docs/media/manual.webp" width="220" alt="User manual"></td>
+    <td><img src="docs/media/watch.webp" width="220" alt="Watch on the desk"></td>
   </tr>
 </table>
 
