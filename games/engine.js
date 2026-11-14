@@ -226,14 +226,24 @@
         } else if (m.type === 'button' && m.button) {
           const map = { left: 'left', right: 'right', action: 'action', up: 'up', down: 'down' };
           const a = map[m.button] || m.button;
+          if (a) {
+            if (!g.keys.has(a)) g.keys.add(a);
+          }
           g._dispatch(a, true);
-          setTimeout(() => g._dispatch(a, false), 90);
+          setTimeout(() => {
+            if (a) g.keys.delete(a);
+            g._dispatch(a, false);
+          }, 90);
         } else if (m.type === 'sensor' || m.type === 'tilt') {
           g.tilt.x = m.x || 0; g.tilt.y = m.y || 0; g.tilt.z = m.z || 0;
         } else if (m.type === 'watch_event') {
           const keyMap = { 1: 'left', 2: 'action', 3: 'right' };
           const a = keyMap[m.key];
-          if (a) { g._dispatch(a, true); setTimeout(() => g._dispatch(a, false), 90); }
+          if (a) {
+            if (!g.keys.has(a)) g.keys.add(a);
+            g._dispatch(a, true);
+            setTimeout(() => { g.keys.delete(a); g._dispatch(a, false); }, 90);
+          }
         }
       };
     }
