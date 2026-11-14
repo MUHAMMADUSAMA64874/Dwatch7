@@ -4,9 +4,8 @@ State as of the 2026-10-05 corrected-attribution session. Read this first to res
 
 ## Commands to continue
 
-All commands run from `d:\Resources\dwatch fleage`
-(Python: `C:\Users\CodenCoder\AppData\Local\Programs\Python\Python311\python.exe`,
-`bleak` installed this session).
+All commands run from the repository root
+(Python 3.11 with `bleak`, installed locally).
 
 ```powershell
 # 1. Watch must be on and in range (BLE name: D Watch7, C2:FC:01:BC:D4:1F)

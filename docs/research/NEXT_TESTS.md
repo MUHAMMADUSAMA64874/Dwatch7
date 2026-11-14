@@ -77,7 +77,7 @@ Ran command: `python -u game_server.py`
 Ran command: `Get-NetTCPConnection -LocalPort 8765 | Select-Object OwningProcess -Unique`
 Viewed task-1156.log:30-79
 
-An in-depth summary has been prepared detailing what we set out to achieve, the empirical findings from the logs and decompiled Android app, and the path forward. You can view the full report in [watch_project_summary.md](file:///C:/Users/CodenCoder/.gemini/antigravity-ide/brain/34e102b9-c14f-46b8-8f66-b50d05eec305/watch_project_summary.md).
+An in-depth summary was prepared detailing what we set out to achieve, the empirical findings from the logs and decompiled Android app, and the path forward. (The original local report link has been removed.)
 
 ---
 
@@ -88,7 +88,7 @@ The goal was to transform your physical **D Watch 7** (`C2:FC:01:BC:D4:1F`, Freq
 1. **Wrist-Tilt Steering**: Read the watch’s internal 3-axis accelerometer/gyroscope ($X, Y, Z$) in real time over Bluetooth Low Energy (BLE) so that tilting your wrist left or right steers the bike in our 3D Cyberpunk motorcycle game ([`common/games/motorcycle-alt.html`](http://127.0.0.1:8000/common/games/motorcycle-alt.html)).
 2. **Real-Time 3D Diagnostics Workbench**: Create an interactive 3D telemetry station ([`motion_sim.html`](http://127.0.0.1:8000/new%20finding/motion_sim.html)) featuring a live 3D smartwatch model, dual semicircle arc dials (Roll & Pitch), G-force level meters, and an oscilloscope waveform graph.
 3. **Bi-Directional Haptic Feedback**: Send vibration pulses from the game to the watch so you feel physical haptic vibrations on your wrist during near-misses, turbo boosts, and crashes.
-4. **Standalone Local Bridge**: A background Python server ([`game_server.py`](file:///d:/Resources/dwatch%20fleage/game_server.py)) running without third-party phone apps, streaming telemetry straight into the browser over WebSocket at `ws://127.0.0.1:8765`.
+4. **Standalone Local Bridge**: A background Python server (`game_server.py`) running without third-party phone apps, streaming telemetry straight into the browser over WebSocket at `ws://127.0.0.1:8765`.
 
 ---
 
@@ -105,13 +105,13 @@ The goal was to transform your physical **D Watch 7** (`C2:FC:01:BC:D4:1F`, Freq
 #### B. The Core Bottleneck: Why Tilting Does Nothing
 
 - **Log Evidence**:
-  In [`task-1156.log`](file:///C:/Users/CodenCoder/.gemini/antigravity-ide/brain/34e102b9-c14f-46b8-8f66-b50d05eec305/.system_generated/tasks/task-1156.log), whenever the server sends Game Start (`CMD 0x28 key 0x00`), the watch answers:
+  In the captured log (`task-1156.log`), whenever the server sends Game Start (`CMD 0x28 key 0x00`), the watch answers:
   ```text
   [RX] cmd=0x28 key=0x00 (len=10) hex=fd000630280400000100
   ```
   Prefix **`0xFD`** is a generic command acknowledgement ("packet received"). It **never sends a single `cmd=0x28 key=0x01` data frame** containing raw accelerometer numbers ($X, Y, Z$).
 - **Decompiled M2Wear APK Proof**:
-  In the official decompiled M2Wear app ([`NotifyWriteUtils.java:614-628`](file:///d:/Resources/dwatch%20fleage/m2wear_src/sources/com/lianhezhuli/mtwear/ble/utils/NotifyWriteUtils.java#L614-L628)):
+  In the official decompiled M2Wear app (`NotifyWriteUtils.java:614-628`):
   ```java
   if (receiveBytes.length >= 36) {
       deviceFunEvent.setMotionSensingGame((receiveBytes[35] & 5) == 5);

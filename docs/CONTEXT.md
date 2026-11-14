@@ -64,13 +64,10 @@ _unsupported/                      rejected / unverified material
   unverified (see `_unsupported/unverified_notes.md`).
 
 ## Environment
-Windows · PowerShell · Python **3.11** at
-`C:\Users\CodenCoder\AppData\Local\Programs\Python\Python311\python.exe` (`bleak`
-installed 2026-10-05) · JDK 17 (OpenJDK 17.0.16) ·
-Android SDK (adb) at `C:\Users\CodenCoder\AppData\Local\Android\Sdk\platform-tools`
+Windows · PowerShell · Python **3.11** at a local install (`bleak` installed 2026-10-05) · JDK 17 (OpenJDK 17.0.16) ·
+Android SDK (adb) at a local install
 · jadx 1.5.2 in `tools\`
-· **project path: `d:\Resources\dwatch fleage`** (old `c:\Users\UsamaPC\Desktop\...`
-paths in earlier notes are dead)
+· **project path:** local working directory (old `c:\Users\...\Desktop\...` paths in earlier notes are dead)
 
 ## Useful commands
 ```powershell
@@ -86,5 +83,5 @@ python ota_send.py
 python face_verify.py 0002
 # phone (Motorola one 5G UW, Android 11) - APK package name for run-as:
 #   com.lianhezhuli.mtwear  (NOT com.lhzl.*)
-C:\Users\CodenCoder\AppData\Local\Android\Sdk\platform-tools\adb.exe devices
+adb devices
 ```
